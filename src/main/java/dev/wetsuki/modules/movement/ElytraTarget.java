@@ -124,6 +124,8 @@ public class ElytraTarget extends Function {
     private Vec3d smCenter = null;
     private boolean smMoving = false;
     private boolean smFast = false;
+    private Vec3d prevRawDir = null;
+    private double smTurn = 0.0;
 
     public ElytraTarget() {
         addSettings(
@@ -154,6 +156,8 @@ public class ElytraTarget extends Function {
         smDir = null;
         smCenter = null;
         smFast = false;
+        prevRawDir = null;
+        smTurn = 0.0;
     }
 
     private void rebuildAirDirections() {
@@ -454,6 +458,8 @@ public class ElytraTarget extends Function {
             smCenter = null;
             smMoving = false;
             smFast = false;
+            prevRawDir = null;
+            smTurn = 0.0;
         }
 
         // Hareketi yumuşat (paket titremesi noktayı zıplatmasın) + histerezis
@@ -471,6 +477,13 @@ public class ElytraTarget extends Function {
             Vec3d flat = new Vec3d(look.x, 0, look.z);
             dir = flat.lengthSquared() < 1.0E-4 ? Vec3d.fromPolar(0, base.getYaw()) : flat.normalize();
         }
+
+        // Hedef ne kadar kıvrılıyor (etrafımızda dönüyor mu)? Düz giderken ~0, dönerken büyük
+        if (prevRawDir != null) {
+            double turn = 1.0 - prevRawDir.dotProduct(dir);
+            smTurn = smTurn + (turn - smTurn) * 0.4;
+        }
+        prevRawDir = dir;
 
         // Yönü yumuşat
         if (smDir == null) {
@@ -491,8 +504,10 @@ public class ElytraTarget extends Function {
                 Vec3d future = base.getPos().add(smMotion.multiply(t));
                 t = MathHelper.clamp(me.distanceTo(future) / mySpeed, 0.0, 12.0);
             }
-            lead = smMotion.multiply(t);
-            if (lead.lengthSquared() > 400.0) lead = lead.normalize().multiply(20.0);
+            // Hedef dönüyorsa (etrafımızda dolanıyorsa) doğrusal tahmin noktayı çok dışarı atar: tahmini kapat
+            double straight = MathHelper.clamp(1.0 - smTurn / 0.03, 0.0, 1.0);
+            lead = smMotion.multiply(t * straight);
+            if (lead.lengthSquared() > 36.0) lead = lead.normalize().multiply(6.0);
         }
 
         Vec3d half = new Vec3d(0, base.getHeight() / 2.0, 0);
@@ -583,12 +598,18 @@ public class ElytraTarget extends Function {
     /** Vuruş penceresinde hedefin kendisine, değilse hedefin önündeki noktaya nişan alır. */
     private Vec3d aimPointFor(LivingEntity base, Vec3d front) {
         Vec3d targetAim = hitAimPoint(base);
-        if (!smFast) return targetAim;
+        if (!smFast) {
+            frontTime = 0L;                       // hitbox'a değil hedefe uçuyoruz: kutuyu gizle
+            return targetAim;
+        }
 
         // Önüne geçmeye devam et. Sadece vuruş hazırsa ve hedef menzildeyken bu nişan hedefi kaçırıyorsa
         // (hedef yanımızdan/etrafımızdan dönüyorsa) hedefe dön ki vuruş hedefe dönükken yapılsın.
         Vec3d aim = stableAimPoint(front);
-        if (inHitWindow(base) && !rayHitsTarget(base, aim)) return targetAim;
+        if (inHitWindow(base) && !rayHitsTarget(base, aim)) {
+            frontTime = 0L;                       // vuruş için hedefe dönüyoruz: kutuyu gizle
+            return targetAim;
+        }
         return aim;
     }
 
