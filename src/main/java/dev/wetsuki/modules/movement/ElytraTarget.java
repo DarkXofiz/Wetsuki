@@ -45,6 +45,7 @@ public class ElytraTarget extends Function {
 
     private final BooleanSetting frontMode = new BooleanSetting("Front of target", true, "Flies in front of the target and hits it");
     private final SliderSetting frontDistance = new SliderSetting("Front distance", 3.0, 1.0, 15.0, 0.5, () -> frontMode.get());
+    private final BooleanSetting hitboxAim = new BooleanSetting("Hitbox aim", true, "Aims exactly at the target inside attack range so hits land", () -> frontMode.get());
     private final BooleanSetting frontHitbox = new BooleanSetting("Show hitbox", true, () -> frontMode.get());
 
     private final SliderSetting sila = new SliderSetting("Fly away", 8, 5, 40, 1, () -> mode.is("Advanced"));
@@ -130,7 +131,7 @@ public class ElytraTarget extends Function {
     public ElytraTarget() {
         addSettings(
                 mode,
-                frontMode, frontDistance, frontHitbox,
+                frontMode, frontDistance, hitboxAim, frontHitbox,
                 sila, silaTime,
                 perelet, predict,
                 leaveHP, leaveList,
@@ -555,13 +556,14 @@ public class ElytraTarget extends Function {
     /** Vuruş hazırsa ve hedef menzile yakınsa true: bu sırada bakış hedefe çevrilir ki vuruş hedefe dönükken yapılsın. */
     private boolean inHitWindow(LivingEntity base) {
         double radius = Manager.FUNCTION_MANAGER.attackAura.getAttackRadius();
-        boolean ready = mc.player.getMainHandStack().isOf(Items.MACE)
-                || mc.player.getAttackCooldownProgress(0.0f) >= 0.7f;
-        if (!ready) return false;
         // Yaklaşma hızı yüksekse vuruştan 1-2 tick önce menzile girilmiş olur; bakışı erken hazırla
         double closing = mc.player.getVelocity().subtract(smMotion).length();
         double margin = MathHelper.clamp(1.0 + closing * 1.2, 1.0, 4.5);
-        return AuraUtil.getDistance(base) <= radius + margin;
+        boolean inRange = AuraUtil.getDistance(base) <= radius + margin;
+        if (hitboxAim.get()) return inRange;   // menzildeyken her zaman hitbox'a nişan al
+        boolean ready = mc.player.getMainHandStack().isOf(Items.MACE)
+                || mc.player.getAttackCooldownProgress(0.0f) >= 0.7f;
+        return ready && inRange;
     }
 
     /** Verilen noktaya bakarsak bakış çizgisi hedefin gövdesinden geçer mi? */
@@ -606,7 +608,7 @@ public class ElytraTarget extends Function {
         // Önüne geçmeye devam et. Sadece vuruş hazırsa ve hedef menzildeyken bu nişan hedefi kaçırıyorsa
         // (hedef yanımızdan/etrafımızdan dönüyorsa) hedefe dön ki vuruş hedefe dönükken yapılsın.
         Vec3d aim = stableAimPoint(front);
-        if (inHitWindow(base) && !rayHitsTarget(base, aim)) {
+        if (inHitWindow(base) && (hitboxAim.get() || !rayHitsTarget(base, aim))) {
             frontTime = 0L;                       // vuruş için hedefe dönüyoruz: kutuyu gizle
             return targetAim;
         }
