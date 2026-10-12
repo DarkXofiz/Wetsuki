@@ -28,7 +28,6 @@ import dev.wetsuki.modules.setting.MultiSetting;
 import dev.wetsuki.modules.setting.SliderSetting;
 import dev.wetsuki.util.color.ColorUtil;
 import dev.wetsuki.util.move.NetworkUtils;
-import dev.wetsuki.util.player.GCDUtil;
 import dev.wetsuki.util.player.InventoryUtil;
 import dev.wetsuki.util.player.TimerUtil;
 import dev.wetsuki.util.render.RenderAddon;
@@ -123,9 +122,6 @@ public class ElytraTarget extends Function {
     private Vec3d smMotion = Vec3d.ZERO;
     private Vec3d smDir = null;
     private Vec3d smCenter = null;
-    private Vec3d frontAimOff = null; // gösterilen hitbox'ın hedefe göre konumu (render'da hedefin yumuşak konumuna eklenir)
-    private Vec3d smOffset = null;   // hedefe göre yumuşatılmış ofset (dünya koordinatında değil, böylece hedefin gerisinde kalmaz)
-    private long directUntil = 0L;   // vuruş penceresinde hedefe dönük nişanı titremesin diye kısa süre kilitle
     private boolean smMoving = false;
     private boolean smFast = false;
 
@@ -157,9 +153,6 @@ public class ElytraTarget extends Function {
         frontEntity = null;
         smDir = null;
         smCenter = null;
-        smOffset = null;
-        frontAimOff = null;
-        directUntil = 0L;
         smFast = false;
     }
 
@@ -424,20 +417,14 @@ public class ElytraTarget extends Function {
     }
 
     private void renderFrontHitbox() {
-        if (!frontMode.get() || !frontHitbox.get() || frontEntity == null || frontAimOff == null) return;
+        if (!frontMode.get() || !frontHitbox.get() || frontFeet == null) return;
         if (!mc.player.isGliding() || Manager.FUNCTION_MANAGER.attackAura.target == null) return;
         if (System.currentTimeMillis() - frontTime > 300L) return;
 
-        // Kutuyu hedefin render-yumuşatılmış konumuna göre çiz: tick atlamaları yüzünden kayık/yamuk görünmesin
-        float td = mc.getRenderTickCounter().getTickDelta(true);
-        Vec3d bp = frontEntity.getLerpedPos(td);
-        Vec3d center = bp.add(frontAimOff);
-
         double hw = frontWidth / 2.0;
-        double hh = frontHeight / 2.0;
         Box box = new Box(
-                center.x - hw, center.y - hh, center.z - hw,
-                center.x + hw, center.y + hh, center.z + hw
+                frontFeet.x - hw, frontFeet.y, frontFeet.z - hw,
+                frontFeet.x + hw, frontFeet.y + frontHeight, frontFeet.z + hw
         );
         RenderUtil.render3D.drawHoleOutline(box, ColorUtil.rgba(255, 70, 70, 255), 2);
     }
@@ -465,25 +452,20 @@ public class ElytraTarget extends Function {
             smMotion = motion;
             smDir = null;
             smCenter = null;
-            smOffset = null;
-            frontAimOff = null;
-            directUntil = 0L;
             smMoving = false;
             smFast = false;
         }
 
         // Hareketi yumuşat (paket titremesi noktayı zıplatmasın) + histerezis
         smMotion = lerpVec(smMotion, motion, motion.lengthSquared() > smMotion.lengthSquared() * 1.5 ? 0.6 : 0.35);
-        // Hedef uçmuyorsa (yürüyor/düşüyor/zıplıyor) dikey hareketi yok say: nokta yukarı/aşağı yamuk kaçmasın
-        Vec3d mv = base.isGliding() ? smMotion : new Vec3d(smMotion.x, 0.0, smMotion.z);
-        double speedSq = mv.lengthSquared();
+        double speedSq = smMotion.lengthSquared();
         if (smMoving) smMoving = speedSq > 0.01; else smMoving = speedSq > 0.03;
-        // Hedef yeterince hızlıysa (>~10 blok/sn) "önüne geç" mantığı, yavaşsa doğrudan hedefe uç
-        if (smFast) smFast = speedSq > 0.12; else smFast = speedSq > 0.25;
+        // Hedef hareket ediyorsa (yürüyen/koşan/uçan) "önüne geç" mantığı, duruyorsa doğrudan hedefe uç
+        smFast = smMoving;
 
         Vec3d dir;
         if (smMoving) {
-            dir = mv.normalize();
+            dir = smMotion.normalize();
         } else {
             Vec3d look = base.getRotationVecClient();
             Vec3d flat = new Vec3d(look.x, 0, look.z);
@@ -499,31 +481,17 @@ public class ElytraTarget extends Function {
             smDir = blended.lengthSquared() < 1.0E-6 ? dir : blended.normalize();
         }
 
-        // Kesişme (intercept): |hedef + v*t - ben| = hız*t denklemini doğrudan çöz.
-        // Eski 3 adımlı tahmin, yavaşken/kalkışta çok kısa kalıyor ve hep hedefin arkasına uçuruyordu.
+        // Kesişme: hedefin bizim varacağımız zamandaki konumunu yinelemeli hesapla (kaçan hedef için tek adım yetmez)
         Vec3d lead = Vec3d.ZERO;
         if (smMoving && !mc.player.isTouchingWater()) {
-            double vSpeed = mv.length();
-            double mySpeed = Math.max(Math.max(mc.player.getVelocity().length(), 1.2), vSpeed * 1.15);
-            Vec3d d = base.getPos().add(0, base.getHeight() / 2.0, 0).subtract(mc.player.getPos().add(0, 0.4, 0));
-            double a = mv.lengthSquared() - mySpeed * mySpeed;      // mySpeed > vSpeed olduğundan a < 0
-            double b = 2.0 * d.dotProduct(mv);
-            double c = d.lengthSquared();
-            double t;
-            double disc = b * b - 4.0 * a * c;
-            if (Math.abs(a) < 1.0E-6 || disc < 0.0) {
-                t = Math.sqrt(c) / mySpeed;
-            } else {
-                double sq = Math.sqrt(disc);
-                double t1 = (-b + sq) / (2.0 * a);
-                double t2 = (-b - sq) / (2.0 * a);
-                t = Double.MAX_VALUE;
-                if (t1 > 0.0) t = Math.min(t, t1);
-                if (t2 > 0.0) t = Math.min(t, t2);
-                if (t == Double.MAX_VALUE) t = Math.sqrt(c) / mySpeed;
+            double mySpeed = Math.max(mc.player.getVelocity().length(), 1.0);
+            Vec3d me = mc.player.getPos();
+            double t = 0.0;
+            for (int i = 0; i < 3; i++) {
+                Vec3d future = base.getPos().add(smMotion.multiply(t));
+                t = MathHelper.clamp(me.distanceTo(future) / mySpeed, 0.0, 12.0);
             }
-            t = MathHelper.clamp(t, 0.0, 10.0);
-            lead = mv.multiply(t);
+            lead = smMotion.multiply(t);
             if (lead.lengthSquared() > 400.0) lead = lead.normalize().multiply(20.0);
         }
 
@@ -531,7 +499,7 @@ public class ElytraTarget extends Function {
         Vec3d origin = base.getPos().add(lead).add(half);
 
         // Nokta her zaman saldırı menzilinin içinde kalsın ki AttackAura vuruş yapabilsin
-        double maxHitDist = Math.max(1.2, Manager.FUNCTION_MANAGER.attackAura.getAttackRadius() - 1.2); // menzil sınırında değil, güvenli içinde dur
+        double maxHitDist = Math.max(1.0, Manager.FUNCTION_MANAGER.attackAura.getAttackRadius() - 0.5);
         double dist = Math.min(frontDistance.get().doubleValue(), maxHitDist);
         Vec3d center = origin.add(smDir.multiply(dist));
         for (int i = 0; i < 3 && !isFrontClear(origin, center); i++) {
@@ -550,17 +518,17 @@ public class ElytraTarget extends Function {
             center = center.add(0, 1.0, 0);
         }
 
-        // Noktayı dünya koordinatında değil, HEDEFE GÖRE ofset olarak yumuşat.
-        // (Eskiden dünya koordinatında yumuşatılıyordu: hızlı hedefte nokta hedefin 1-2 blok gerisinde kalıyor,
-        //  bu yüzden önüne geçilemiyor ve sağa sola kayılıyordu.)
-        Vec3d basePos = base.getPos();
-        Vec3d offset = center.subtract(basePos);
-        if (smOffset == null || smOffset.distanceTo(offset) > 6.0) {
-            smOffset = offset;                              // ilk kare / büyük sıçrama: sıfırla
+        // Noktanın kendisini de yumuşat (ani sıçrama olursa sıfırla)
+        if (smCenter == null) {
+            smCenter = center;
         } else {
-            smOffset = lerpVec(smOffset, offset, 0.5);
+            double dd = smCenter.distanceTo(center);
+            if (dd > 6.0) {
+                smCenter = center;                       // büyük sıçrama: sıfırla
+            } else if (dd > 0.3) {
+                smCenter = lerpVec(smCenter, center, 0.45); // küçük titremeyi yoksay, gerisini yumuşat
+            }
         }
-        smCenter = basePos.add(smOffset);
 
         frontFeet = smCenter.subtract(half);
         frontWidth = base.getWidth();
@@ -573,8 +541,12 @@ public class ElytraTarget extends Function {
     private boolean inHitWindow(LivingEntity base) {
         double radius = Manager.FUNCTION_MANAGER.attackAura.getAttackRadius();
         boolean ready = mc.player.getMainHandStack().isOf(Items.MACE)
-                || mc.player.getAttackCooldownProgress(0.0f) >= 0.8f;
-        return ready && AuraUtil.getDistance(base) <= radius + 1.0;
+                || mc.player.getAttackCooldownProgress(0.0f) >= 0.7f;
+        if (!ready) return false;
+        // Yaklaşma hızı yüksekse vuruştan 1-2 tick önce menzile girilmiş olur; bakışı erken hazırla
+        double closing = mc.player.getVelocity().subtract(smMotion).length();
+        double margin = MathHelper.clamp(1.0 + closing * 1.2, 1.0, 4.5);
+        return AuraUtil.getDistance(base) <= radius + margin;
     }
 
     /** Verilen noktaya bakarsak bakış çizgisi hedefin gövdesinden geçer mi? */
@@ -594,22 +566,29 @@ public class ElytraTarget extends Function {
         return horizontal <= base.getWidth() * 0.5 + 0.3 && Math.abs(diff.y) <= base.getHeight() * 0.5 + 0.2;
     }
 
+    /**
+     * Hedefin gövdesine nişan noktası. Paket bu tick'in sonunda, biz hareket ettikten sonra gittiği için
+     * kendi hızımızı çıkarıp hedefin bir tick sonraki konumuna göre hesaplar.
+     */
+    private Vec3d hitAimPoint(LivingEntity base) {
+        Vec3d center = base.getPos().add(0, base.getHeight() * 0.5, 0).add(smMotion);
+        Vec3d eye = mc.player.getEyePos();
+        Vec3d a = center.subtract(mc.player.getVelocity());
+        Vec3d toA = a.subtract(eye);
+        // Telafi edilen nokta çok yakınsa ya da arkamızda kalıyorsa düz hedefe bak
+        if (toA.lengthSquared() < 0.25 || toA.dotProduct(center.subtract(eye)) <= 0.0) return center;
+        return a;
+    }
+
     /** Vuruş penceresinde hedefin kendisine, değilse hedefin önündeki noktaya nişan alır. */
     private Vec3d aimPointFor(LivingEntity base, Vec3d front) {
-        Vec3d targetAim = base.getPos().add(0, base.getHeight() * 0.5, 0).add(smMotion);
-
-        // Gösterilen hitbox = gerçek ön nokta (hedefe göre konum olarak saklanır)
-        frontAimOff = front.subtract(base.getPos());
-
+        Vec3d targetAim = hitAimPoint(base);
         if (!smFast) return targetAim;
 
         // Önüne geçmeye devam et. Sadece vuruş hazırsa ve hedef menzildeyken bu nişan hedefi kaçırıyorsa
         // (hedef yanımızdan/etrafımızdan dönüyorsa) hedefe dön ki vuruş hedefe dönükken yapılsın.
         Vec3d aim = stableAimPoint(front);
-        long now = System.currentTimeMillis();
-        if (inHitWindow(base) && !rayHitsTarget(base, aim)) directUntil = now + 250L;
-        // Her tick ön nokta <-> hedef arasında gidip gelme (sağ-sol titreme) olmasın diye kısa süre kilitle
-        if (now < directUntil) return targetAim;
+        if (inHitWindow(base) && !rayHitsTarget(base, aim)) return targetAim;
         return aim;
     }
 
@@ -626,30 +605,6 @@ public class ElytraTarget extends Function {
         return lerpVec(beyond, front, w);
     }
 
-    /**
-     * Doğrudan kilitlenen dönüş: aşım (overshoot) ve minimum adım yok.
-     * Fark adım sınırından küçükse tam hedefe oturur, büyükse sınırlı adımla gider.
-     */
-    private void rotateTo(float targetYaw, float targetPitch) {
-        float curYaw = Manager.ROTATION.getYaw();
-        float curPitch = Manager.ROTATION.getPitch();
-
-        float dYaw = MathHelper.wrapDegrees(targetYaw - curYaw);
-        float dPitch = targetPitch - curPitch;
-
-        float stepYaw = MathHelper.clamp(dYaw, -150f, 150f);
-        float stepPitch = MathHelper.clamp(dPitch, -75f, 75f);
-
-        float gcd = GCDUtil.getGCDValue();
-        if (gcd > 1.0E-4f) {
-            stepYaw = Math.round(stepYaw / gcd) * gcd;
-            stepPitch = Math.round(stepPitch / gcd) * gcd;
-        }
-
-        Manager.ROTATION.set(curYaw + stepYaw, MathHelper.clamp(curPitch + stepPitch, -89.9f, 89.9f));
-    }
-
-    /** Verilen noktaya kilitlenir. Noktaya çok yakınken yön (atan2) çılgınca döndüğü için yaw sabit tutulur. */
     private void aimAt(Vec3d p) {
         double dx = p.x - mc.player.getX();
         double dy = p.y - (mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose()));
@@ -659,17 +614,10 @@ public class ElytraTarget extends Function {
         y = (int) Math.floor(p.y);
         z = (int) Math.floor(p.z);
 
-        double hd = Math.hypot(dx, dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+        float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.hypot(dx, dz)));
 
-        float yaw;
-        if (hd < 1.0) {
-            yaw = Manager.ROTATION.getYaw();                 // noktanın üstündeyiz/içindeyiz: yönü koru
-        } else {
-            yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
-        }
-        float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.max(hd, 1.5)));
-
-        rotateTo(yaw, pitch);
+        Manager.ROTATION.setSmooth(yaw, pitch, 1.15f, 140f, 40f, true);
     }
 
     public void overtakingElytra(LivingEntity base, boolean attack) {
@@ -680,7 +628,6 @@ public class ElytraTarget extends Function {
         Vec3d modifiedPos;
 
         if (inEvasion) {
-            if (airDirections.isEmpty() || directionIndex >= airDirections.size()) rebuildAirDirections();
             Vec3d dir = airDirections.get(directionIndex);
             double strength = sila.get().floatValue();
             Vec3d candidatePos = targetPos.add(dir.normalize().multiply(strength));
@@ -722,7 +669,25 @@ public class ElytraTarget extends Function {
             }
         }
 
-        aimAt(modifiedPos);
+        double dx = modifiedPos.x - mc.player.getX();
+        double dy = modifiedPos.y - (mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose()));
+        double dz = modifiedPos.z - mc.player.getZ();
+
+        x = (int) modifiedPos.x;
+        y = (int) modifiedPos.y;
+        z = (int) modifiedPos.z;
+
+        float targetYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+        float targetPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.hypot(dx, dz)));
+
+        Manager.ROTATION.setSmooth(
+                targetYaw,
+                targetPitch,
+                1.15f,
+                140f,
+                40f,
+                true
+        );
     }
 
     public void targetDefault(LivingEntity base, boolean attack) {
@@ -730,7 +695,7 @@ public class ElytraTarget extends Function {
             aimAt(aimPointFor(base, computeFrontCenter(base)));
             return;
         }
-        Vec3d targetPos = base.getPos().add(0, base.getHeight() / 2.0, 0);
+        Vec3d targetPos = base.getPos();
         double bps;
 
         try {
@@ -752,7 +717,25 @@ public class ElytraTarget extends Function {
             targetPos = targetPos.add(predicted);
         }
 
-        aimAt(targetPos);
+        double diffX = targetPos.x - mc.player.getX();
+        double diffY = targetPos.y - (mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose()));
+        double diffZ = targetPos.z - mc.player.getZ();
+
+        x = (int) targetPos.x;
+        y = (int) targetPos.y;
+        z = (int) targetPos.z;
+
+        float yaw = (float) (Math.toDegrees(Math.atan2(diffZ, diffX)) - 90.0f);
+        float pitch = (float) (-Math.toDegrees(Math.atan2(diffY, Math.hypot(diffX, diffZ))));
+
+        Manager.ROTATION.setSmooth(
+                yaw,
+                pitch,
+                1.15f,
+                140f,
+                40f,
+                true
+        );
     }
 
 
