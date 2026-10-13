@@ -45,7 +45,7 @@ public class ElytraTarget extends Function {
 
     private final BooleanSetting frontMode = new BooleanSetting("Front of target", true, "Flies in front of the target and hits it");
     private final SliderSetting frontDistance = new SliderSetting("Front distance", 3.0, 1.0, 15.0, 0.5, () -> frontMode.get());
-    private final BooleanSetting hitboxAim = new BooleanSetting("Hitbox aim", true, "Aims exactly at the target inside attack range so hits land", () -> frontMode.get());
+    private final BooleanSetting hitboxAim = new BooleanSetting("Hitbox aim", true, "Faces the target right before each hit so hits land, otherwise keeps getting in front", () -> frontMode.get());
     private final BooleanSetting frontHitbox = new BooleanSetting("Show hitbox", true, () -> frontMode.get());
 
     private final SliderSetting sila = new SliderSetting("Fly away", 8, 5, 40, 1, () -> mode.is("Advanced"));
@@ -560,7 +560,8 @@ public class ElytraTarget extends Function {
         double closing = mc.player.getVelocity().subtract(smMotion).length();
         double margin = MathHelper.clamp(1.0 + closing * 1.2, 1.0, 4.5);
         boolean inRange = AuraUtil.getDistance(base) <= radius + margin;
-        if (hitboxAim.get()) return inRange;   // menzildeyken her zaman hitbox'a nişan al
+        // Sadece vuruş yaklaşırken (bekleme süresi dolmaya yakın) hedefe dön; aralarda önüne geçmeye devam et.
+        // Elytra'da hız yönü yavaş değiştiği için 2-3 tick'lik dönüş yolu fazla bozmaz.
         boolean ready = mc.player.getMainHandStack().isOf(Items.MACE)
                 || mc.player.getAttackCooldownProgress(0.0f) >= 0.7f;
         return ready && inRange;
