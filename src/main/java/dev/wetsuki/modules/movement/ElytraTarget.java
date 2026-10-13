@@ -128,6 +128,7 @@ public class ElytraTarget extends Function {
     private Vec3d prevRawDir = null;
     private double smTurn = 0.0;
     private double smOmega = 0.0; // hedefin yatay dönüş hızı (rad/tick)
+    private Vec3d compPos = null;  // gecikme telafi edilmiş hedef konumu
 
     public ElytraTarget() {
         addSettings(
@@ -161,6 +162,7 @@ public class ElytraTarget extends Function {
         prevRawDir = null;
         smTurn = 0.0;
         smOmega = 0.0;
+        compPos = null;
     }
 
     private void rebuildAirDirections() {
@@ -449,6 +451,19 @@ public class ElytraTarget extends Function {
         return a.add(b.subtract(a).multiply(t));
     }
 
+    /**
+     * Ekranda gördüğümüz hedef konumu gerçek konumun gerisinde kalır (ağ gecikmesi + oyuncu konum interpolasyonu).
+     * Kaçan hedefte bu fark metrelerce olur; tahminleri bu kadar tick ileriye kaydırırız.
+     */
+    private double latencyTicks() {
+        double ping = 0.0;
+        if (mc.getNetworkHandler() != null && mc.player != null) {
+            net.minecraft.client.network.PlayerListEntry entry = mc.getNetworkHandler().getPlayerListEntry(mc.player.getUuid());
+            if (entry != null) ping = entry.getLatency();
+        }
+        return MathHelper.clamp(1.5 + ping / 50.0, 1.5, 7.0);
+    }
+
     /** Sabit hızla, sabit dönüş hızıyla (om rad/tick) steps tick sonraki konum. om=0 ise düz çizgi. */
     private Vec3d predictArc(Vec3d pos0, Vec3d motion, double om, int steps) {
         double c = Math.cos(om), s = Math.sin(om);
@@ -484,6 +499,7 @@ public class ElytraTarget extends Function {
             prevRawDir = null;
             smTurn = 0.0;
             smOmega = 0.0;
+            compPos = null;
         }
 
         // Hareketi yumuşat (paket titremesi noktayı zıplatmasın) + histerezis
@@ -527,24 +543,28 @@ public class ElytraTarget extends Function {
             smDir = blended.lengthSquared() < 1.0E-6 ? dir : blended.normalize();
         }
 
-        // Kesişme: hedefin bizim varacağımız andaki konumunu hesapla. Hedef dönüyorsa düz çizgi değil YAY üzerinde tahmin et
+        // Hedefin gerçek (gecikme telafili) konumu + bizim varacağımız andaki konumu. Dönüyorsa YAY üzerinde tahmin et.
         Vec3d leadPos = base.getPos();
         Vec3d heading = smDir;
+        compPos = base.getPos();
         if (smMoving && !mc.player.isTouchingWater()) {
             double mySpeed = Math.max(mc.player.getVelocity().length(), 1.0);
             Vec3d me = mc.player.getPos();
             double om = Math.abs(smOmega) < 0.02 ? 0.0 : MathHelper.clamp(smOmega, -0.8, 0.8);
+            int lagSteps = (int) Math.round(latencyTicks());
+            compPos = predictArc(base.getPos(), smMotion, om, lagSteps);
+
             int steps = 0;
             for (int i = 0; i < 3; i++) {
-                Vec3d predI = predictArc(base.getPos(), smMotion, om, steps);
+                Vec3d predI = predictArc(base.getPos(), smMotion, om, lagSteps + steps);
                 steps = (int) Math.round(MathHelper.clamp(me.distanceTo(predI) / mySpeed, 0.0, 12.0));
             }
-            Vec3d pred = predictArc(base.getPos(), smMotion, om, steps);
+            Vec3d pred = predictArc(base.getPos(), smMotion, om, lagSteps + steps);
             Vec3d off = pred.subtract(base.getPos());
-            if (off.lengthSquared() > 64.0) off = off.normalize().multiply(8.0);
+            if (off.lengthSquared() > 196.0) off = off.normalize().multiply(14.0);
             leadPos = base.getPos().add(off);
 
-            double ang = om * (steps + 1.5);
+            double ang = om * (lagSteps + steps + 1.5);
             double ca = Math.cos(ang), sa = Math.sin(ang);
             Vec3d rot = new Vec3d(smDir.x * ca - smDir.z * sa, smDir.y, smDir.x * sa + smDir.z * ca);
             heading = rot.lengthSquared() < 1.0E-6 ? smDir : rot.normalize();
@@ -613,7 +633,7 @@ public class ElytraTarget extends Function {
         double lenSq = dir.lengthSquared();
         if (lenSq < 1.0E-6) return true;
 
-        Vec3d tc = base.getPos().add(0, base.getHeight() * 0.5, 0);
+        Vec3d tc = (compPos != null ? compPos : base.getPos()).add(0, base.getHeight() * 0.5, 0);
         double t = tc.subtract(eye).dotProduct(dir) / lenSq;
         if (t < 0.0) return false;                       // hedef bakış yönünün arkasında
 
@@ -628,7 +648,7 @@ public class ElytraTarget extends Function {
      * kendi hızımızı çıkarıp hedefin bir tick sonraki konumuna göre hesaplar.
      */
     private Vec3d hitAimPoint(LivingEntity base) {
-        Vec3d center = base.getPos().add(0, base.getHeight() * 0.5, 0).add(smMotion);
+        Vec3d center = (compPos != null ? compPos : base.getPos()).add(0, base.getHeight() * 0.5, 0).add(smMotion);
         Vec3d eye = mc.player.getEyePos();
         Vec3d a = center.subtract(mc.player.getVelocity());
         Vec3d toA = a.subtract(eye);
