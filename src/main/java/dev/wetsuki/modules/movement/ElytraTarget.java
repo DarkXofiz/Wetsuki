@@ -635,9 +635,8 @@ public class ElytraTarget extends Function {
         // Yaklaşma hızı yüksekse vuruştan 1-2 tick önce menzile girilmiş olur; bakışı erken hazırla
         double closing = mc.player.getVelocity().subtract(smMotion).length();
         double margin = MathHelper.clamp(1.0 + closing * 1.2, 1.0, 4.5);
-        double dNow = getCompDistance(base);
-        if (dNow < 0.0) dNow = AuraUtil.getDistance(base);
-        boolean inRange = dNow <= radius + margin;
+        // V32 uçuşunu korumak için pencere ekrandaki mesafeyi kullanır (telafili mesafe sadece AttackAura'da vuruş izni için)
+        boolean inRange = AuraUtil.getDistance(base) <= radius + margin;
         // Sadece vuruş yaklaşırken (bekleme süresi dolmaya yakın) hedefe dön; aralarda önüne geçmeye devam et.
         // Elytra'da hız yönü yavaş değiştiği için 2-3 tick'lik dönüş yolu fazla bozmaz.
         boolean ready = mc.player.getMainHandStack().isOf(Items.MACE)
