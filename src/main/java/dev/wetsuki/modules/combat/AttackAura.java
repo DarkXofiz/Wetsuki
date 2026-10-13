@@ -663,9 +663,19 @@ public class AttackAura extends Function {
         }
     }
 
+    /** Elytra hedeflemesi açıkken menzil, gecikme telafili (gerçek) hedef konumuna göre ölçülür. */
+    private double attackDistance(LivingEntity e) {
+        ElytraTarget ely = Manager.FUNCTION_MANAGER.elytraTarget;
+        if (ely != null && ely.state && mc.player.isGliding()) {
+            double d = ely.getCompDistance(e);
+            if (d >= 0.0) return d;
+        }
+        return AuraUtil.getDistance(e);
+    }
+
     private boolean shouldAttack(LivingEntity e) {
         if (e == null || cpsLimit > System.currentTimeMillis()) return false;
-        if (AuraUtil.getDistance(e) > distance.get().doubleValue()) return false;
+        if (attackDistance(e) > distance.get().doubleValue()) return false;
         return canAttack();
     }
 

@@ -464,6 +464,23 @@ public class ElytraTarget extends Function {
         return MathHelper.clamp(1.5 + ping / 50.0, 1.5, 7.0);
     }
 
+    /**
+     * Gecikme telafili hedef konumuna göre vuruş mesafesi (hitbox kenarına). Telafi geçerli değilse -1.
+     * AttackAura menzil kontrolünü ekrandaki (gecikmiş) konum yerine bununla yapar.
+     */
+    public double getCompDistance(LivingEntity e) {
+        if (!frontMode.get() || e != frontEntity || compPos == null || !smMoving || mc.player == null) return -1.0;
+        // Güncel hedef konumundan yeniden hesapla (AttackAura bu kontrolü rotasyon güncellemesinden önce yapar)
+        double om = Math.abs(smOmega) < 0.02 ? 0.0 : MathHelper.clamp(smOmega, -0.8, 0.8);
+        Vec3d cp = predictArc(e.getPos(), smMotion, om, (int) Math.round(latencyTicks()));
+        Box box = e.getBoundingBox().offset(cp.subtract(e.getPos()));
+        Vec3d eye = mc.player.getEyePos();
+        double nx = MathHelper.clamp(eye.x, box.minX, box.maxX);
+        double ny = MathHelper.clamp(eye.y, box.minY, box.maxY);
+        double nz = MathHelper.clamp(eye.z, box.minZ, box.maxZ);
+        return eye.distanceTo(new Vec3d(nx, ny, nz));
+    }
+
     /** Sabit hızla, sabit dönüş hızıyla (om rad/tick) steps tick sonraki konum. om=0 ise düz çizgi. */
     private Vec3d predictArc(Vec3d pos0, Vec3d motion, double om, int steps) {
         double c = Math.cos(om), s = Math.sin(om);
@@ -618,7 +635,9 @@ public class ElytraTarget extends Function {
         // Yaklaşma hızı yüksekse vuruştan 1-2 tick önce menzile girilmiş olur; bakışı erken hazırla
         double closing = mc.player.getVelocity().subtract(smMotion).length();
         double margin = MathHelper.clamp(1.0 + closing * 1.2, 1.0, 4.5);
-        boolean inRange = AuraUtil.getDistance(base) <= radius + margin;
+        double dNow = getCompDistance(base);
+        if (dNow < 0.0) dNow = AuraUtil.getDistance(base);
+        boolean inRange = dNow <= radius + margin;
         // Sadece vuruş yaklaşırken (bekleme süresi dolmaya yakın) hedefe dön; aralarda önüne geçmeye devam et.
         // Elytra'da hız yönü yavaş değiştiği için 2-3 tick'lik dönüş yolu fazla bozmaz.
         boolean ready = mc.player.getMainHandStack().isOf(Items.MACE)
