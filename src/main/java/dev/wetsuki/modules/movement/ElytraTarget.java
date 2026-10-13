@@ -127,6 +127,7 @@ public class ElytraTarget extends Function {
     private boolean smFast = false;
     private Vec3d prevRawDir = null;
     private double smTurn = 0.0;
+    private double smOmega = 0.0; // hedefin yatay dönüş hızı (rad/tick)
 
     public ElytraTarget() {
         addSettings(
@@ -159,6 +160,7 @@ public class ElytraTarget extends Function {
         smFast = false;
         prevRawDir = null;
         smTurn = 0.0;
+        smOmega = 0.0;
     }
 
     private void rebuildAirDirections() {
@@ -447,6 +449,26 @@ public class ElytraTarget extends Function {
         return a.add(b.subtract(a).multiply(t));
     }
 
+    /** Sabit hızla, sabit dönüş hızıyla (om rad/tick) steps tick sonraki konum. om=0 ise düz çizgi. */
+    private Vec3d predictArc(Vec3d pos0, Vec3d motion, double om, int steps) {
+        double c = Math.cos(om), s = Math.sin(om);
+        // yumuşatma gecikmesi için başlangıç hızını biraz ileri döndür
+        double lc = Math.cos(om * 1.5), ls = Math.sin(om * 1.5);
+        double hx = motion.x * lc - motion.z * ls;
+        double hz = motion.x * ls + motion.z * lc;
+        double px = pos0.x, py = pos0.y, pz = pos0.z;
+        for (int i = 0; i < steps; i++) {
+            double nx = hx * c - hz * s;
+            double nz = hx * s + hz * c;
+            hx = nx;
+            hz = nz;
+            px += hx;
+            pz += hz;
+            py += motion.y;
+        }
+        return new Vec3d(px, py, pz);
+    }
+
     /** Hedefin hareket/bakış yönünün önünde, ayarlanan mesafedeki hitbox merkezi (tick'ler arası yumuşatılmış). */
     private Vec3d computeFrontCenter(LivingEntity base) {
         Vec3d motion = new Vec3d(base.getX() - base.prevX, base.getY() - base.prevY, base.getZ() - base.prevZ);
@@ -461,6 +483,7 @@ public class ElytraTarget extends Function {
             smFast = false;
             prevRawDir = null;
             smTurn = 0.0;
+            smOmega = 0.0;
         }
 
         // Hareketi yumuşat (paket titremesi noktayı zıplatmasın) + histerezis
@@ -479,52 +502,68 @@ public class ElytraTarget extends Function {
             dir = flat.lengthSquared() < 1.0E-4 ? Vec3d.fromPolar(0, base.getYaw()) : flat.normalize();
         }
 
-        // Hedef ne kadar kıvrılıyor (etrafımızda dönüyor mu)? Düz giderken ~0, dönerken büyük
-        if (prevRawDir != null) {
-            double turn = 1.0 - prevRawDir.dotProduct(dir);
-            smTurn = smTurn + (turn - smTurn) * 0.4;
+        // Hedefin yatay dönüş hızını ölç (etrafımızda dönüyorsa yay çizer, düz giderken ~0)
+        if (!smMoving) {
+            smOmega *= 0.5;
+            prevRawDir = null;
+        } else {
+            if (prevRawDir != null
+                    && Math.hypot(prevRawDir.x, prevRawDir.z) > 1.0E-4
+                    && Math.hypot(dir.x, dir.z) > 1.0E-4) {
+                double cr = prevRawDir.x * dir.z - prevRawDir.z * dir.x;
+                double dt = prevRawDir.x * dir.x + prevRawDir.z * dir.z;
+                smOmega += (Math.atan2(cr, dt) - smOmega) * 0.4;
+            }
+            prevRawDir = dir;
         }
-        prevRawDir = dir;
 
         // Yönü yumuşat
         if (smDir == null) {
             smDir = dir;
         } else {
             double follow = smDir.dotProduct(dir) > 0.7 ? 0.3 : 0.7; // ani yön değişiminde (kaçış) hızlı takip
+            follow = Math.max(follow, MathHelper.clamp(0.3 + Math.abs(smOmega) * 2.0, 0.3, 0.9)); // dönen hedefi geriden takip etme
             Vec3d blended = lerpVec(smDir, dir, follow);
             smDir = blended.lengthSquared() < 1.0E-6 ? dir : blended.normalize();
         }
 
-        // Kesişme: hedefin bizim varacağımız zamandaki konumunu yinelemeli hesapla (kaçan hedef için tek adım yetmez)
-        Vec3d lead = Vec3d.ZERO;
+        // Kesişme: hedefin bizim varacağımız andaki konumunu hesapla. Hedef dönüyorsa düz çizgi değil YAY üzerinde tahmin et
+        Vec3d leadPos = base.getPos();
+        Vec3d heading = smDir;
         if (smMoving && !mc.player.isTouchingWater()) {
             double mySpeed = Math.max(mc.player.getVelocity().length(), 1.0);
             Vec3d me = mc.player.getPos();
-            double t = 0.0;
+            double om = Math.abs(smOmega) < 0.02 ? 0.0 : MathHelper.clamp(smOmega, -0.8, 0.8);
+            int steps = 0;
             for (int i = 0; i < 3; i++) {
-                Vec3d future = base.getPos().add(smMotion.multiply(t));
-                t = MathHelper.clamp(me.distanceTo(future) / mySpeed, 0.0, 12.0);
+                Vec3d predI = predictArc(base.getPos(), smMotion, om, steps);
+                steps = (int) Math.round(MathHelper.clamp(me.distanceTo(predI) / mySpeed, 0.0, 12.0));
             }
-            // Hedef dönüyorsa (etrafımızda dolanıyorsa) doğrusal tahmin noktayı çok dışarı atar: tahmini kapat
-            double straight = MathHelper.clamp(1.0 - smTurn / 0.03, 0.0, 1.0);
-            lead = smMotion.multiply(t * straight);
-            if (lead.lengthSquared() > 36.0) lead = lead.normalize().multiply(6.0);
+            Vec3d pred = predictArc(base.getPos(), smMotion, om, steps);
+            Vec3d off = pred.subtract(base.getPos());
+            if (off.lengthSquared() > 64.0) off = off.normalize().multiply(8.0);
+            leadPos = base.getPos().add(off);
+
+            double ang = om * (steps + 1.5);
+            double ca = Math.cos(ang), sa = Math.sin(ang);
+            Vec3d rot = new Vec3d(smDir.x * ca - smDir.z * sa, smDir.y, smDir.x * sa + smDir.z * ca);
+            heading = rot.lengthSquared() < 1.0E-6 ? smDir : rot.normalize();
         }
 
         Vec3d half = new Vec3d(0, base.getHeight() / 2.0, 0);
-        Vec3d origin = base.getPos().add(lead).add(half);
+        Vec3d origin = leadPos.add(half);
 
         // Nokta her zaman saldırı menzilinin içinde kalsın ki AttackAura vuruş yapabilsin
         double maxHitDist = Math.max(1.0, Manager.FUNCTION_MANAGER.attackAura.getAttackRadius() - 0.5);
         double dist = Math.min(frontDistance.get().doubleValue(), maxHitDist);
-        Vec3d center = origin.add(smDir.multiply(dist));
+        Vec3d center = origin.add(heading.multiply(dist));
         for (int i = 0; i < 3 && !isFrontClear(origin, center); i++) {
             dist *= 0.6;
-            center = origin.add(smDir.multiply(dist));
+            center = origin.add(heading.multiply(dist));
         }
         if (dist < 1.0) {                       // engel çok yakınsa bile hedefin merkezine çökme, en az 1 blok önde kal
             dist = 1.0;
-            center = origin.add(smDir.multiply(dist));
+            center = origin.add(heading.multiply(dist));
         }
 
         // Nokta blok/zemin içine düştüyse yukarı kaldır (içine uçulamaz, önüne geçmek imkansız olur)
