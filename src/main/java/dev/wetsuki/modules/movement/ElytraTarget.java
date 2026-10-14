@@ -720,6 +720,14 @@ public class ElytraTarget extends Function {
         return lerpVec(beyond, front, w);
     }
 
+    /**
+     * Uçuş yönü bu rotasyondan gelir. Eski ayar (smooth 1.15, 140/40) her tick hedefi %15 aşıp geri dönüyor ve
+     * tek tick'te 160 dereceye kadar savruluyordu (yamuk uçuş). Aşmasız ve tick başına en çok 55/30 derece döner.
+     */
+    private void applyFlightRotation(float yaw, float pitch) {
+        Manager.ROTATION.setSmooth(yaw, pitch, 1.0f, 55f, 30f, true);
+    }
+
     private void aimAt(Vec3d p) {
         double dx = p.x - mc.player.getX();
         double dy = p.y - (mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose()));
@@ -732,7 +740,7 @@ public class ElytraTarget extends Function {
         float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
         float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.hypot(dx, dz)));
 
-        Manager.ROTATION.setSmooth(yaw, pitch, 1.15f, 140f, 40f, true);
+        applyFlightRotation(yaw, pitch);
     }
 
     public void overtakingElytra(LivingEntity base, boolean attack) {
@@ -795,14 +803,7 @@ public class ElytraTarget extends Function {
         float targetYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
         float targetPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.hypot(dx, dz)));
 
-        Manager.ROTATION.setSmooth(
-                targetYaw,
-                targetPitch,
-                1.15f,
-                140f,
-                40f,
-                true
-        );
+        applyFlightRotation(targetYaw, targetPitch);
     }
 
     public void targetDefault(LivingEntity base, boolean attack) {
