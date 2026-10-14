@@ -46,6 +46,7 @@ public class ElytraTarget extends Function {
     private final BooleanSetting frontMode = new BooleanSetting("Front of target", true, "Flies in front of the target and hits it");
     private final SliderSetting frontDistance = new SliderSetting("Front distance", 3.0, 1.0, 15.0, 0.5, () -> frontMode.get());
     private final BooleanSetting hitboxAim = new BooleanSetting("Hitbox aim", true, "Faces the target right before each hit so hits land, otherwise keeps getting in front", () -> frontMode.get());
+    private final BooleanSetting autoFirework = new BooleanSetting("Auto firework", false, "Uses a firework automatically when your flight speed drops while chasing a target");
     private final BooleanSetting frontHitbox = new BooleanSetting("Show hitbox", true, () -> frontMode.get());
 
     private final SliderSetting sila = new SliderSetting("Fly away", 8, 5, 40, 1, () -> mode.is("Advanced"));
@@ -109,6 +110,7 @@ public class ElytraTarget extends Function {
     private List<Vec3d> airDirections = new ArrayList<>();
 
     private final TimerUtil fireworkTimer = new TimerUtil();
+    private final TimerUtil autoFireworkTimer = new TimerUtil();
     private final TimerUtil sanyaEblan = new TimerUtil();
     public boolean trueFireWork = false;
 
@@ -133,7 +135,7 @@ public class ElytraTarget extends Function {
     public ElytraTarget() {
         addSettings(
                 mode,
-                frontMode, frontDistance, hitboxAim, frontHitbox,
+                frontMode, frontDistance, hitboxAim, autoFirework, frontHitbox,
                 sila, silaTime,
                 perelet, predict,
                 leaveHP, leaveList,
@@ -191,6 +193,18 @@ public class ElytraTarget extends Function {
 
         if (event instanceof EventRender3D) {
             renderFrontHitbox();
+        }
+
+        // Hedef varken uçuş hızı düşerse otomatik havai fişek (Advanced'in kendi havai fişek ayarı açıksa onu kullan)
+        if (event instanceof EventUpdate
+                && autoFirework.get()
+                && !(mode.is("Advanced") && firework.get())
+                && mc.player.isGliding()
+                && Manager.FUNCTION_MANAGER.attackAura.target != null
+                && mc.player.getVelocity().length() < 1.4
+                && autoFireworkTimer.hasTimeElapsed(500L)) {
+            InventoryUtil.inventorySwapClick2(Items.FIREWORK_ROCKET, true, false);
+            autoFireworkTimer.reset();
         }
 
         if (mode.is("Advanced") && mc.player.isGliding()) {
