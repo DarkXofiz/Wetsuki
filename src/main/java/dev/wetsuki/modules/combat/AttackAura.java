@@ -262,12 +262,6 @@ public class AttackAura extends Function {
         attackCooldown = 0;
         postAttack = (int) MathUtil.random(8.0f, 10.0f);
         hitCounter++;
-
-        ElytraTarget ely = Manager.FUNCTION_MANAGER.elytraTarget;
-        if (ely != null && ely.mode.is("Advanced")) {
-            ely.trueFireWork = true;
-            if (ely.prefer.get() && target != null) ely.nextPhase(target);
-        }
     }
 
     private boolean shieldBreaker(LivingEntity t) {
@@ -353,19 +347,12 @@ public class AttackAura extends Function {
         return ely != null && ely.state && mc.player.isGliding();
     }
 
+    // The new ElytraTarget only tracks/predicts the target, it no longer drives the rotation
     private boolean handleElytraRotation(LivingEntity t) {
-        if (!elytraActive()) return false;
-        ElytraTarget ely = Manager.FUNCTION_MANAGER.elytraTarget;
-        if (ely.mode.is("Advanced")) ely.overtakingElytra(t, false);
-        else ely.targetDefault(t, false);
-        return true;
+        return false;
     }
 
     private double attackDistanceTo(LivingEntity e) {
-        if (elytraActive()) {
-            double d = Manager.FUNCTION_MANAGER.elytraTarget.getCompDistance(e);
-            if (d >= 0.0) return d;
-        }
         return eyeDistance(e);
     }
 
