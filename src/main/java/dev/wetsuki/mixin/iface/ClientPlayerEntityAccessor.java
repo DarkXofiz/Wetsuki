@@ -24,4 +24,7 @@ public interface ClientPlayerEntityAccessor {
 
     @Accessor("lastSprinting")
     boolean getLastSprinting();
+
+    @Accessor("lastSprinting")
+    void setLastSprinting(boolean lastSprinting);
 }

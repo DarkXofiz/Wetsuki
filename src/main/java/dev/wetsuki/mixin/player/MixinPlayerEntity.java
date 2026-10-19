@@ -23,7 +23,8 @@ public class MixinPlayerEntity implements IMinecraft {
     private Vec3d redirectGetRotationVector(PlayerEntity instance) {
         AttackAura attackAura = Manager.FUNCTION_MANAGER.attackAura;
         RotationController rotationController = Manager.ROTATION;
-        if (attackAura.state && attackAura.target != null && attackAura.correction.get() || rotationController.isControlling() && instance == mc.player) {
+        if (attackAura.state && attackAura.target != null && attackAura.correction.get() || rotationController.isControlling() && instance == mc.player
+                || Manager.FUNCTION_MANAGER.attackAuraV2.isActive() && instance == mc.player) {
             float pitch = rotationController.getPitch();
             float yaw = rotationController.getYaw();
             return ((MixinEntityAccessor) instance).invokeGetRotationVector(pitch, yaw);

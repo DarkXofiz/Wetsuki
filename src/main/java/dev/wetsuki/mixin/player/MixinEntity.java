@@ -149,7 +149,7 @@ public abstract class MixinEntity implements IEntity, CameraOverriddenEntity, IM
         TargetStrafe targetStrafe = Manager.FUNCTION_MANAGER.targetStrafe;
         RotationController rotationController = Manager.ROTATION;
 
-        boolean correcting = (attackAura.state && attackAura.correction.get()) || rotationController.isControlling();
+        boolean correcting = (attackAura.state && attackAura.correction.get()) || rotationController.isControlling() || Manager.FUNCTION_MANAGER.attackAuraV2.isActive();
         if (correcting) {
             float yaw = rotationController.getYaw();
 

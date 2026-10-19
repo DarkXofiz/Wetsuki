@@ -42,7 +42,7 @@ public abstract class MixinLivingEntity implements IMinecraft {
         RotationController rotationController = Manager.ROTATION;
         CrystalAura crystalAura = Manager.FUNCTION_MANAGER.crystalAura;
         Float yaw = null;
-        if ((attackAura.state && attackAura.correction.get()) || rotationController.isControlling()) {
+        if ((attackAura.state && attackAura.correction.get()) || rotationController.isControlling() || Manager.FUNCTION_MANAGER.attackAuraV2.isActive()) {
             yaw = rotationController.getYaw();
         } else if (autoExplosion.check()) {
             yaw = autoExplosion.serverRot.x;
@@ -80,7 +80,7 @@ public abstract class MixinLivingEntity implements IMinecraft {
         if (!((Object) this == mc.player)) return;
         AttackAura attackAura = Manager.FUNCTION_MANAGER.attackAura;
         RotationController rotationController = Manager.ROTATION;
-        if (attackAura.state && attackAura.correction.get() || rotationController.isControlling()) {
+        if (attackAura.state && attackAura.correction.get() || rotationController.isControlling() || Manager.FUNCTION_MANAGER.attackAuraV2.isActive()) {
             float customYaw = rotationController.getYaw();
             float customPitch = rotationController.getPitch();
             Vec3d rotationVec = Vec3d.fromPolar(customPitch, customYaw);

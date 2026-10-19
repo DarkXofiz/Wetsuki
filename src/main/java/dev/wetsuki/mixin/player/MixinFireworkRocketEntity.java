@@ -24,7 +24,8 @@ public abstract class MixinFireworkRocketEntity implements IMinecraft {
             SuperFirework superFirework = Manager.FUNCTION_MANAGER.superFirework;
             AttackAura attackAura = Manager.FUNCTION_MANAGER.attackAura;
             RotationController rotationController = Manager.ROTATION;
-            if (attackAura.state && attackAura.target != null && attackAura.correction.get() || rotationController.isControlling()) {
+            boolean auraV2 = Manager.FUNCTION_MANAGER.attackAuraV2.isActive();
+            if (attackAura.state && attackAura.target != null && attackAura.correction.get() || rotationController.isControlling() || auraV2) {
                 rotationVector = Vec3d.fromPolar(Manager.ROTATION.getPitch(), Manager.ROTATION.getYaw());
             } else {
                 rotationVector = shooter.getRotationVecClient();
@@ -34,7 +35,7 @@ public abstract class MixinFireworkRocketEntity implements IMinecraft {
             double speedY = 1.5;
 
             if (superFirework.state) {
-                float yaw = (attackAura.state && attackAura.target != null) || (rotationController.isControlling()) ? (Manager.ROTATION.getYaw() % 360f) : (mc.player.getYaw() % 360f);
+                float yaw = (attackAura.state && attackAura.target != null) || (rotationController.isControlling()) || auraV2 ? (Manager.ROTATION.getYaw() % 360f) : (mc.player.getYaw() % 360f);
 
                 boolean isDiagonal = false;
                 boolean nearPlayer = false;

@@ -348,11 +348,6 @@ public class RenderUtil implements IMinecraft {
             RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
             GL11.glDisable(GL11.GL_POLYGON_SMOOTH);
         }
-        public static void drawFilledBox(Box box, int color) {
-            MatrixStack matrices = matrixFrom(box.minX, box.minY, box.minZ);
-            Box shifted = box.offset(new Vec3d(box.minX, box.minY, box.minZ).negate());
-            renderFillBox(matrices, shifted, true, color, color, color, color);
-        }
         private static void renderFillBox(MatrixStack stack, Box box, boolean depth, int color1, int color2, int color3, int color4) {
             BufferBuilder buffer = IMinecraft.tessellator().begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
             Matrix4f matrix = stack.peek().getPositionMatrix();

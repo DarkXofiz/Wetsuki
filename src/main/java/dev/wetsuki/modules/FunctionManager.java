@@ -24,6 +24,8 @@ public class FunctionManager {
     public final ElytraTarget elytraTarget;
     public final SuperFirework superFirework;
     public final AttackAura attackAura;
+    public final AttackAuraV2 attackAuraV2;
+    public final ElytraTargetV2 elytraTargetV2;
     public final CrystalAura crystalAura;
     public final NoFriendDamage noFriendDamage;
     public final HitBox xbox;
@@ -79,6 +81,8 @@ public class FunctionManager {
                 autoExplosion = new AutoExplosion(),
                 new AttackExtend(),
                 attackAura = new AttackAura(),
+                attackAuraV2 = new AttackAuraV2(),
+                elytraTargetV2 = new ElytraTargetV2(),
                 crystalAura = new CrystalAura(),
                 selfTrap = new SelfTrap(),
                 autoPotion = new AutoPotion(),
@@ -93,11 +97,6 @@ public class FunctionManager {
                 optimizer = new Optimizer(),
                 clientSounds = new ClientSounds(),
                 new DeathCoords(),
-                new Wetsuki.VulcanBypass(),
-                new Wetsuki.GrimBypass(),
-                new Wetsuki.MatrixBypass(),
-                new Wetsuki.VerusBypass(),
-                new Wetsuki.PolarBypass(),
                 new ServerRPSpoff(),
                 new Xray(),
                 new ElytraHelper(),

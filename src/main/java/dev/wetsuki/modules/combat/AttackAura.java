@@ -1,6 +1,5 @@
 package dev.wetsuki.modules.combat;
 
-import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
@@ -8,24 +7,23 @@ import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.entity.mob.Monster;
+import net.minecraft.entity.passive.AnimalEntity;
+import net.minecraft.entity.passive.VillagerEntity;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.AxeItem;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
 import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec2f;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.RaycastContext;
 import dev.wetsuki.events.Event;
 import dev.wetsuki.events.impl.EventUpdate;
 import dev.wetsuki.events.impl.input.EventKeyBoard;
 import dev.wetsuki.events.impl.move.EventMotion;
+import dev.wetsuki.events.impl.player.EventSprint;
 import dev.wetsuki.manager.Manager;
 import dev.wetsuki.mixin.iface.ClientPlayerEntityAccessor;
 import dev.wetsuki.modules.Function;
@@ -33,297 +31,662 @@ import dev.wetsuki.modules.FunctionAnnotation;
 import dev.wetsuki.modules.Type;
 import dev.wetsuki.modules.movement.ElytraTarget;
 import dev.wetsuki.modules.render.littlePet.GhostWolfEntity;
+import dev.wetsuki.modules.setting.BindBooleanSetting;
 import dev.wetsuki.modules.setting.BooleanSetting;
 import dev.wetsuki.modules.setting.ModeSetting;
 import dev.wetsuki.modules.setting.MultiSetting;
 import dev.wetsuki.modules.setting.SliderSetting;
-import dev.wetsuki.util.math.MathUtil;
 import dev.wetsuki.util.math.RayTraceUtil;
 import dev.wetsuki.util.move.MoveUtil;
 import dev.wetsuki.util.player.AuraUtil;
-import dev.wetsuki.util.player.GCDUtil;
 import dev.wetsuki.util.player.InventoryUtil;
+import dev.wetsuki.util.vector.VectorUtil;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Optional;
-import java.util.stream.Stream;
+import java.util.*;
+
+import static net.minecraft.util.Hand.MAIN_HAND;
 
 @SuppressWarnings("All")
-@FunctionAnnotation(name = "AttackAura", keywords = {"Smash", "Pound", "KillAura", "Aura"}, desc = "Automatically attacks targets near you", type = Type.Combat)
+@FunctionAnnotation(name = "AttackAura", keywords = {"Smash","Pound","KillAura"}, desc = "Smashes everyone's head around you", type = Type.Combat)
 public class AttackAura extends Function {
 
-    private final ModeSetting rotationType = new ModeSetting("Aim type", "FunTime", "FunTime", "FunTime FOV", "Legit");
-
-    private final MultiSetting targetSettings = new MultiSetting(
-            "Attack targets",
-            Arrays.asList("Without armor", "Players"),
-            new String[]{"Without armor", "Hostile mobs", "Animals", "Friends", "Players"}
+    private final ModeSetting mode = new ModeSetting("Mode",
+            "ReallyWorld",
+            "ReallyWorld",
+            "HollyWorld",
+            "FunTime",
+            "SpookyTime",
+            "Snap",
+            "KoopinAc",
+            "LonyGrief",
+            "1.8.8"
     );
 
-    private final SliderSetting attackDistance = new SliderSetting("Attack distance", 3.0f, 0.1f, 6.0f, 0.1f);
-    private final SliderSetting extraReach = new SliderSetting("Extra distance", 0.5f, 0.1f, 3.0f, 0.1f);
+    private final MultiSetting targets = new MultiSetting(
+            "Targets",
+            Arrays.asList("Players", "Naked", "Mobs", "Monsters"),
+            new String[]{"Players", "Naked", "Friends", "Mobs", "Monsters", "Villagers"}
+    );
+
+    private final ModeSetting sort = new ModeSetting("Sort",
+            "By health",
+            "By health",
+            "By distance",
+            "By armor"
+    );
+
+    private final MultiSetting setting = new MultiSetting(
+            "Settings",
+            Arrays.asList("Crits only", "Break shield", "Shield release"),
+            new String[]{"Crits only", "Break shield", "Shield release"}
+    );
+
+    private final SliderSetting distance = new SliderSetting("Attack radius", 3.0f, 1.8f, 6f, 0.1f);
+    private final SliderSetting rotateDistance = new SliderSetting("Detection radius", 5f, 0.0f, 10f, 0.1f);
+
     private final SliderSetting elytraDistance = new SliderSetting("Elytra radius", 40f, 0f, 80f, 1f);
+    private final SliderSetting snapSpeed = new SliderSetting("Snap speed", 150, 50, 300, 50f, () -> mode.is("Snap"));
 
-    private final BooleanSetting onlyCrits = new BooleanSetting("Critical hits only", true);
-    private final BooleanSetting adaptiveHits = new BooleanSetting("Adaptive hits", true, () -> onlyCrits.get());
-
-    private final MultiSetting dontHitWhen = new MultiSetting(
-            "Don't hit when",
-            Arrays.asList("Using an item", "Container open", "Enemy behind a wall"),
-            new String[]{"Using an item", "Container open", "Enemy behind a wall"}
-    );
-
-    private final BooleanSetting shieldBreaking = new BooleanSetting("Shield break", true);
-    private final BooleanSetting smartSprint = new BooleanSetting("Smart sprint", false);
-    private final ModeSetting targetPriority = new ModeSetting("Target priority", "Crosshair", "Crosshair", "Distance", "HP", "Armor");
+    private final BindBooleanSetting onlySpaceCritical = new BindBooleanSetting("Only with space", false, () -> setting.get("Crits only"));
+    private final BooleanSetting noAttackIfEat = new BooleanSetting("Don't hit while eating", false);
+    private final BooleanSetting raycast = new BooleanSetting("Check aim", false);
 
     public final BooleanSetting correction = new BooleanSetting("Correction", true);
-    public final ModeSetting correctionType = new ModeSetting(() -> correction.get(), "Correction type", "Focus", "Focus", "Free");
+    public final ModeSetting correctionType = new ModeSetting(() -> correction.get(), "Correction type", "Free", "Free", "Focus");
+    private final ModeSetting sprintreset = new ModeSetting("Sprint type", "Rage", "Rage", "Legit", "None");
 
     public LivingEntity target = null;
-    public int attackCooldown = 0;
 
-    private final float[] pitchHistory = new float[30];
-    private int sprintFreeze = 0;
-    private int hitCounter = 0;
-    private int attackWindow = 0;
-    private int postAttack = -1;
-    private int acquireTicks = 2;
-    private boolean randomDirection = false;
+    public double getAttackRadius() {
+        return distance.get().doubleValue();
+    }
+    private long cpsLimit = 0L;
+    private long lastHitMs = 0L;
+    private int preSprintTicks = 0;
 
     public AttackAura() {
         addSettings(
-                attackDistance,
-                extraReach,
+                mode,
+                targets,
+                sort,
+                setting,
+                distance,
+                rotateDistance,
                 elytraDistance,
-                rotationType,
+                snapSpeed,
                 correction,
                 correctionType,
-                targetPriority,
-                targetSettings,
-                dontHitWhen,
-                onlyCrits,
-                adaptiveHits,
-                shieldBreaking,
-                smartSprint
+                sprintreset,
+                onlySpaceCritical,
+                noAttackIfEat,
+                raycast
         );
     }
-
-    public double getAttackRadius() {
-        return attackDistance.get().doubleValue();
-    }
-
-    @Override
-    protected void onEnable() {
-        super.onEnable();
-        acquireTicks = 2;
-        sprintFreeze = 0;
-        hitCounter = 0;
-        attackWindow = 0;
-        postAttack = -1;
-        attackCooldown = 0;
-        target = null;
-        if (mc.player != null) {
-            Manager.ROTATION.set(mc.player.getYaw(), mc.player.getPitch());
-            Arrays.fill(pitchHistory, mc.player.getPitch());
-        }
-    }
-
-    @Override
-    protected void onDisable() {
-        if (target != null && mc.player != null) {
-            Manager.ROTATION.smoothReturn(350);
-        }
-        target = null;
-        sprintFreeze = 0;
-        attackWindow = 0;
-        postAttack = -1;
-        acquireTicks = 1;
-        attackCooldown = 0;
-        super.onDisable();
-    }
-
-    // ------------------------------------------------------------------ events
 
     @Override
     public void onEvent(Event event) {
         ClientPlayerEntity player = mc.player;
-        if (player == null || mc.world == null || player.isDead()) {
+        if (player == null || player.isDead()) {
             target = null;
-            sprintFreeze = 0;
+            preSprintTicks = 0;
             return;
         }
 
         if (event instanceof EventKeyBoard e) {
-            handleInput(e);
-        } else if (event instanceof EventUpdate) {
-            handleUpdate();
-        } else if (event instanceof EventMotion motion) {
+            if (correction.get() && correctionType.is("Free")) {
+                MoveUtil.fixMovement(e, Manager.FUNCTION_MANAGER.autoPotion.isActivePotion ? Manager.ROTATION.getPitch() : Manager.ROTATION.getYaw());
+            }
+        }
+
+        if (event instanceof EventSprint sprint) {
+            if (sprintreset.is("Legit")) {
+                if (canAttack() && target != null  && player.isSprinting()) {
+                    sprint.setSprinting(false);
+                }
+            }
+        }
+
+        if (event instanceof EventUpdate) {
+            if (target == null || !isValidTarget(target)) {
+                target = findTarget();
+            }
+
+            if (target == null) {
+                Manager.ROTATION.set(player.getYaw(), player.getPitch());
+                cpsLimit = System.currentTimeMillis();
+                return;
+            }
+
+            handleAttackAndRotation(target);
+        }
+
+        if (event instanceof EventMotion motion) {
             motion.setYaw(Manager.ROTATION.getYaw());
             motion.setPitch(Manager.ROTATION.getPitch());
         }
     }
 
-    private void handleInput(EventKeyBoard e) {
-        if (target == null) return;
-
-        if (correction.get() && correctionType.is("Free")) {
-            MoveUtil.fixMovement(e, Manager.ROTATION.getYaw());
-        }
-
-        if (sprintFreeze > 0 && eyeDistance(target) <= attackDistance.get().doubleValue()) {
-            e.setMovementForward(0.0f);
-            e.setMovementStrafe(0.0f);
-            sprintFreeze--;
-        }
+    @Override
+    protected void onEnable() {
+        super.onEnable();
     }
 
-    private void handleUpdate() {
-        attackCooldown = Math.min(attackCooldown + 1, 1000);
-
-        if (Manager.FUNCTION_MANAGER.autoPotion.isActivePotion) {
-            return;
-        }
-
-        if (!isValidTarget(target)) {
-            LivingEntity prev = target;
-            target = dontHitWhen.get("Enemy behind a wall")
-                    ? findTargetWithParam(false).or(() -> findTargetWithParam(true)).orElse(null)
-                    : findTargetWithParam(true).orElse(null);
-            if (target != null && target != prev) {
-                Arrays.fill(pitchHistory, Manager.ROTATION.getPitch());
-            }
-        }
-
-        if (target == null) {
-            Manager.ROTATION.set(mc.player.getYaw(), mc.player.getPitch());
-            acquireTicks = 1;
-            return;
-        }
-
-        if (handleElytraRotation(target)) {
-            performAttack(true);
-            return;
-        }
-
-        performAttack(false);
-        if (target == null) return;
-        rotateToTarget();
-        performAttack(false);
-    }
-
-    // ------------------------------------------------------------------ attack
-
-    private void performAttack(boolean elytraMode) {
-        LivingEntity t = target;
-        if (t == null) return;
-
-        if (!elytraMode && !aimHits(curYaw(), curPitch(), attackDistance.get().doubleValue(), t,
-                !dontHitWhen.get("Enemy behind a wall"))) {
-            return;
-        }
-
-        if (!canAttack()) return;
-
-        boolean skip = false;
-
-        if (((ClientPlayerEntityAccessor) mc.player).getLastSprinting()
-                && !mc.player.isTouchingWater() && !mc.player.isInLava() && !mc.player.isSwimming()
-                && !mc.player.isOnGround() && !skip) {
-            if (!smartSprint.get()) {
-                mc.player.setSprinting(false);
-                mc.player.networkHandler.sendPacket(
-                        new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.STOP_SPRINTING));
-                sprintFreeze = 1;
+    @Override
+    protected void onDisable() {
+        if (target != null && isValidTarget(target)) {
+            String modeName = mode.get();
+            if (modeName.equals("FunTime") || modeName.equals("HollyWorld") || modeName.equals("ReallyWorld")) {
+                Manager.ROTATION.smoothReturn(350);
             } else {
-                sprintFreeze = 1;
-                return;
+                Manager.ROTATION.set(mc.player.getYaw(), mc.player.getPitch());
             }
         }
 
-        if (mc.interactionManager == null) return;
-
-        boolean done = false;
-        if (shieldBreaking.get() && t.isBlocking() && !(mc.player.getMainHandStack().getItem() instanceof AxeItem)) {
-            done = shieldBreaker(t);
-        }
-        if (!done) {
-            mc.interactionManager.attackEntity(mc.player, t);
-            mc.player.swingHand(Hand.MAIN_HAND);
-        }
-        onAttacked();
+        target = null;
+        cpsLimit = System.currentTimeMillis();
+        super.onDisable();
     }
 
-    private void onAttacked() {
-        attackWindow = 0;
-        attackCooldown = 0;
-        postAttack = (int) MathUtil.random(8.0f, 10.0f);
-        hitCounter++;
-    }
+    private boolean isValidTarget(LivingEntity entity) {
+        if (entity == null || entity.isDead() || !entity.isAlive() || entity == mc.player) return false;
 
-    private boolean shieldBreaker(LivingEntity t) {
-        int axeSlot = InventoryUtil.getAxe().slot();
-        if (axeSlot == -1) return false;
+        double dist = AuraUtil.getDistance(entity);
+        double attackRange = distance.get().doubleValue();
+        double detectRange = mc.player.isGliding() ? elytraDistance.get().doubleValue() : rotateDistance.get().doubleValue();
 
-        if (axeSlot >= 9) {
-            mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, axeSlot, mc.player.getInventory().selectedSlot, SlotActionType.SWAP, mc.player);
-            mc.getNetworkHandler().sendPacket(new CloseHandledScreenC2SPacket(mc.player.currentScreenHandler.syncId));
-            mc.interactionManager.attackEntity(mc.player, t);
-            mc.player.swingHand(Hand.MAIN_HAND);
-            mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, axeSlot, mc.player.getInventory().selectedSlot, SlotActionType.SWAP, mc.player);
-            mc.getNetworkHandler().sendPacket(new CloseHandledScreenC2SPacket(mc.player.currentScreenHandler.syncId));
-        } else {
-            mc.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(axeSlot));
-            mc.interactionManager.attackEntity(mc.player, t);
-            mc.player.swingHand(Hand.MAIN_HAND);
-            mc.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(mc.player.getInventory().selectedSlot));
-        }
+        if (dist > attackRange && (detectRange <= 0 || dist > detectRange)) return false;
+        if (Manager.FUNCTION_MANAGER.antiBot.check(entity)) return false;
+
+        if (entity instanceof PlayerEntity) {
+            if (!targets.get("Players")) return false;
+            if (!targets.get("Friends") && Manager.FRIEND_MANAGER.isFriend(entity.getName().getString())) return false;
+        } else if (entity instanceof VillagerEntity && !targets.get("Villagers")) return false;
+        else if (entity instanceof MobEntity || entity instanceof AnimalEntity) {
+            if (!targets.get("Mobs")) return false;
+        } else if (entity instanceof Monster && !targets.get("Monsters")) return false;
+
+        if (entity instanceof ArmorStandEntity) return false;
+        if (Manager.FUNCTION_MANAGER.littleSnickers.state && (entity instanceof GhostWolfEntity)) return false;
+
         return true;
     }
 
-    private boolean usingItemBlocks() {
-        return dontHitWhen.get("Using an item")
-                && mc.player.isUsingItem()
-                && mc.player.getItemUseTimeLeft() > 0
-                && attackCooldown >= 8;
+    private LivingEntity findTarget() {
+        List<LivingEntity> list = new ArrayList<>();
+        for (Entity e : Manager.SYNC_MANAGER.getEntities()) {
+            if (e instanceof LivingEntity le && isValidTarget(le)) list.add(le);
+        }
+        if (list.isEmpty()) return null;
+
+        switch (sort.get()) {
+            case "By health":
+                list.sort(Comparator.comparing(LivingEntity::getHealth));
+                break;
+            case "By distance":
+                list.sort(Comparator.comparingDouble(mc.player::distanceTo));
+                break;
+            case "By armor":
+                list.sort(Comparator.comparingDouble(AuraUtil::getArmor));
+                break;
+            default:
+                break;
+        }
+        return list.get(0);
     }
 
-    private boolean containerBlocks() {
-        return dontHitWhen.get("Container open") && mc.currentScreen instanceof HandledScreen<?>;
+    private float randomYawOffset = 0;
+    private float randomPitchOffset = 0;
+    private int randomUpdateTicks = 0;
+    private float bodyYaw, bodyPitch, prevBodyYaw, prevBodyPitch;
+    private float headYaw, headPitch, prevHeadYaw, prevHeadPitch;
+
+    private final int updateInterval = 2;
+    private final float maxYawShake = 0.3f;
+    private final float maxPitchShake = 0.25f;
+    private final Random random = new Random();
+
+
+    private long shakeStartTime = 0L;
+    private void handleAttackAndRotation(LivingEntity t) {
+        float currYaw = Manager.ROTATION.getYaw();
+        float currPitch = Manager.ROTATION.getPitch();
+
+        boolean canAttackNow = shouldAttack(t);
+        boolean passRay = !raycast.get() || RayTraceUtil.getMouseOver(t, currYaw, currPitch, distance.get().floatValue()) == t;
+        boolean noPotion = !Manager.FUNCTION_MANAGER.autoPotion.isActivePotion;
+
+        if (handleElytraRotation(t)) {
+            if (canAttackNow && passRay && noPotion) attackTarget(mc.player);
+            return;
+        }
+
+        if (mode.is("KoopinAc") || mode.is("1.8.8")) {
+            koopinVector(t, true);
+            if (canAttackNow && passRay && noPotion) attackTarget(mc.player);
+            return;
+        }
+
+        if (mode.is("SpookyTime")) {
+            if (mc.player == null) return;
+
+            if (target == null) {
+                randomYawOffset = 0;
+                randomPitchOffset = 0;
+                float centerYaw = mc.player.getYaw();
+                float centerPitch = mc.player.getPitch();
+
+                {
+                    prevBodyYaw = bodyYaw;
+                    prevBodyPitch = bodyPitch;
+
+                    float yawDiff = MathHelper.wrapDegrees(centerYaw - bodyYaw);
+                    float pitchDiff = centerPitch - bodyPitch;
+
+                    float yawStep = MathHelper.clamp(yawDiff, -45, 45);
+                    float pitchStep = MathHelper.clamp(pitchDiff, -45, 45);
+
+                    bodyYaw += yawStep;
+                    bodyPitch = MathHelper.clamp(bodyPitch + pitchStep, -90f, 90f);
+                }
+
+                {
+                    prevHeadYaw = headYaw;
+                    prevHeadPitch = headPitch;
+
+                    float yawDiff = MathHelper.wrapDegrees(centerYaw - headYaw);
+                    float pitchDiff = centerPitch - headPitch;
+
+                    float yawStep = MathHelper.clamp(yawDiff, -50, 50);
+                    float pitchStep = MathHelper.clamp(pitchDiff, -50, 50);
+
+                    headYaw += yawStep;
+                    headPitch = MathHelper.clamp(headPitch + pitchStep, -90f, 90f);
+                }
+                return;
+            }
+
+            randomUpdateTicks++;
+            if (randomUpdateTicks >= updateInterval) {
+                randomUpdateTicks = 0;
+                randomYawOffset = (random.nextFloat() * 2 - 1) * maxYawShake;
+                randomPitchOffset = (random.nextFloat() * 2 - 1) * maxPitchShake;
+            }
+
+            Vec3d targetPos;
+            {
+                double x = target.getBoundingBox().getCenter().x;
+                double y = target.getY();
+                double z = target.getBoundingBox().getCenter().z;
+
+                int randPoint = random.nextInt(4);
+                switch (randPoint) {
+                    case 0 -> y += target.getHeight() * 0.9;
+                    case 1 -> y += target.getHeight() * 0.75;
+                    case 2 -> y += target.getHeight() * 0.5;
+                    case 3 -> y += target.getHeight() * 0.25;
+                }
+
+                x += (random.nextDouble() * 0.4 - 0.2);
+                z += (random.nextDouble() * 0.4 - 0.2);
+
+                targetPos = new Vec3d(x, y, z);
+            }
+
+            Vec2f rot;
+            {
+                Vec3d eyePos = mc.player.getEyePos();
+                double deltaX = targetPos.x - eyePos.x;
+                double deltaY = targetPos.y - eyePos.y;
+                double deltaZ = targetPos.z - eyePos.z;
+                double hDistance = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
+
+                double yaw = (Math.atan2(deltaZ, deltaX) * 180 / Math.PI) - 90.0f;
+                double pitch = -(Math.atan2(deltaY, hDistance) * 180 / Math.PI);
+
+                rot = new Vec2f((float) pitch, (float) yaw);
+            }
+            {
+                prevBodyYaw = bodyYaw;
+                prevBodyPitch = bodyPitch;
+
+                float yawDiff = MathHelper.wrapDegrees(rot.y - bodyYaw);
+                float pitchDiff = rot.x - bodyPitch;
+
+                bodyYaw += MathHelper.clamp(yawDiff, -45, 45);
+                bodyPitch = MathHelper.clamp(bodyPitch + pitchDiff, -45, 45);
+            }
+
+            Vec2f headRotation;
+            {
+                prevHeadYaw = headYaw;
+                prevHeadPitch = headPitch;
+
+                float yawDiff = MathHelper.wrapDegrees(rot.y - headYaw);
+                float pitchDiff = rot.x - headPitch;
+
+                headYaw += MathHelper.clamp(yawDiff, -50, 50);
+                headPitch = MathHelper.clamp(pitchDiff, -50, 50);
+
+                headRotation = new Vec2f(
+                        rot.x + randomPitchOffset,
+                        rot.y + randomYawOffset
+                );
+            }
+            Manager.ROTATION.setSmooth(headRotation.y, headRotation.x, 0.8f, 60, 90, true);
+            if (canAttackNow && passRay && noPotion) {
+                attackTarget(mc.player);
+            }
+
+            return;
+        }
+
+        if (mode.is("LonyGrief")) {
+            Vec3d tp = predictPos(t);
+            double yawToTarget = Math.toDegrees(Math.atan2(tp.z - mc.player.getZ(), tp.x - mc.player.getX())) - 90.0;
+            double yawDiff = Math.abs(MathHelper.wrapDegrees((float) yawToTarget - currYaw));
+            if (yawDiff <= 180 && canAttackNow && passRay && noPotion) attackTarget(mc.player);
+            Manager.ROTATION.set(mc.player.getYaw(), mc.player.getPitch());
+            return;
+        }
+
+        if (mode.is("FunTime")) {
+            if (canAttackNow && canAttack() && noPotion) {
+                if (passRay) {
+                    attackTarget(mc.player);
+                }
+                lastHitMs = System.currentTimeMillis();
+            }
+           if (System.currentTimeMillis() - lastHitMs < 450) {
+               funtime(t);
+
+           } else {
+               long currentTime = System.currentTimeMillis();
+               if (shakeStartTime == 0L)
+                   shakeStartTime = currentTime;
+               float elapsedSec = (currentTime - shakeStartTime) / 1000f;
+
+               double angle = 2 * Math.PI * 2.4 * elapsedSec;
+               float yawOffset = (float) Math.sin(angle) * 24f;
+
+               double angle2 = 2 * Math.PI * 0.08f * elapsedSec;
+               double[] options = {5.0, 5.5, 5.8, 6.0};
+               double randAmplitude = options[(int)(Math.random() * options.length)];
+               float yawOffset2 = (float) ((float) Math.sin(angle2) * randAmplitude);
+
+
+               float finalYaw = mc.player.getYaw() + yawOffset + yawOffset2;
+               float finalPitch = 0.0f + yawOffset2;
+               Manager.ROTATION.setSmooth(finalYaw, finalPitch, 1.0f, 20f, 10f, true);
+           }
+
+            return;
+        }
+
+        if (mode.is("HollyWorld")) {
+            if (canAttackNow && canAttack() && passRay && noPotion) {
+                hollyworld(t, true);
+                attackTarget(mc.player);
+            } else {
+                hollyworld(t, false);
+            }
+            return;
+        }
+
+        if (mode.is("Snap")) {
+            if (canAttackNow && canAttack() && passRay && noPotion) {
+                attackTarget(mc.player);
+                lastHitMs = System.currentTimeMillis();
+            }
+            if (System.currentTimeMillis() - lastHitMs < (long) snapSpeed.get().floatValue()) {
+                setRotation(t, true);
+            } else {
+                Manager.ROTATION.set(mc.player.getYaw(), mc.player.getPitch());
+            }
+            return;
+        }
+
+        if (canAttackNow && passRay && noPotion) {
+            attackTarget(mc.player);
+        }
+        setRotation(t, true);
+    }
+    private void setRotation(LivingEntity entity, boolean applyGcd) {
+        Vec3d tp = predictPos(entity);
+        double dx = tp.x - mc.player.getX();
+        double dy = (tp.y + entity.getEyeHeight(entity.getPose()) / 2.0) - (mc.player.getY() + mc.player.getEyeHeight(mc.player.getPose()));
+        double dz = tp.z - mc.player.getZ();
+
+        float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+        float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.hypot(dx, dz)));
+        Manager.ROTATION.setSmooth(yaw, pitch, 1.2f, 180f, 15f, applyGcd);
     }
 
-    public boolean canAttack() {
-        if (target == null) return false;
+    private void koopinVector(LivingEntity entity, boolean attackContext) {
+        Vec3d head = entity.getEyePos().add(0, entity.getHeight(), 0);
+        Vec3d chest = entity.getEyePos().add(0, entity.getStandingEyeHeight() / 2.0f, 0);
+        Vec3d legs = entity.getEyePos().add(0, 0.05, 0);
+        Vec3d[] points = new Vec3d[]{head, chest, legs};
 
-        if (usingItemBlocks()) {
-            attackCooldown = 8;
-            return false;
+        float bestPitchDelta = Float.MAX_VALUE;
+        Vec3d best = chest;
+        float currPitch = Manager.ROTATION.getPitch();
+        float currYaw = Manager.ROTATION.getYaw();
+
+        for (Vec3d p : points) {
+            Vec3d eye = mc.player.getEyePos();
+            double dx = p.x - eye.x;
+            double dy = p.y - eye.y;
+            double dz = p.z - eye.z;
+            float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+            float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+            float pitchDelta = Math.abs(pitch - currPitch);
+            if (pitchDelta < bestPitchDelta) {
+                bestPitchDelta = pitchDelta;
+                best = p;
+            }
         }
-        if (containerBlocks() || attackDistanceTo(target) > attackDistance.get().doubleValue()) {
-            return false;
-        }
 
-        boolean holdingMace = mc.player.getMainHandStack().isOf(Items.MACE);
-        boolean cooling = mc.player.getItemCooldownManager().isCoolingDown(mc.player.getMainHandStack());
+        Vec3d eye = mc.player.getEyePos();
+        double dx = best.x - eye.x;
+        double dy = best.y - eye.y;
+        double dz = best.z - eye.z;
+        double dst = Math.sqrt(dx * dx + dz * dz);
 
-        if (mc.player.fallDistance > 1.5f) {
-            if (cooling || attackCooldown <= 3) return false;
-        } else if (holdingMace) {
-            if (cooling || mc.player.getAttackCooldownProgress(0.5f) < 0.9f) return false;
-        } else if (mc.player.getAttackCooldownProgress(0.5f) < 0.9f || attackCooldown < 10) {
-            return false;
-        }
+        float yawTo = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+        float pitchTo = (float) (-Math.toDegrees(Math.atan2(dy, dst)));
 
-        if (!onlyCrits.get()) return true;
-        if (isCritState()) return true;
-        return adaptiveHits.get() && mc.player.isOnGround() && !mc.options.jumpKey.isPressed();
+        float yawDelta = MathHelper.wrapDegrees(yawTo - currYaw);
+        float pitchDelta = pitchTo - currPitch;
+
+        float addYaw = Math.min(Math.max(Math.abs(yawDelta), 1), 80);
+        if (Math.abs(addYaw) <= 3.0f) addYaw = 3.1f;
+
+        float addPitch = Math.max(attackContext ? Math.abs(pitchDelta) : 1.0f, 2.0f);
+
+        float ny = currYaw + (yawDelta > 0 ? addYaw : -addYaw);
+        float np = MathHelper.clamp(currPitch + (pitchDelta > 0 ? addPitch : -addPitch), -90.0f, 90.0f);
+
+        Manager.ROTATION.set(ny, np);
     }
 
-    private boolean critImpossible() {
-        return mc.player.hasStatusEffect(StatusEffects.BLINDNESS)
+    private boolean swingSideRight = false;
+    private float jitterYaw = 0f, jitterYawTarget = 0f, jitterYawSpeed = 0f;
+    private float microJitter = 0f;
+    private float swayPhase = 0f;
+    private float swaySpeed = 0.04f;
+    private float swayAmplitude = 2.5f;
+    private long lastSwitch = 0L;
+    private long lastBreathChange = 0L;
+
+
+    private void funtime(LivingEntity entity) {
+        Vec3d eye = mc.player.getEyePos();
+        Vec3d base = entity.getPos();
+
+        float[] points = new float[]{0.82f, 0.67f, 0.43f, 0.27f};
+        float mul = points[(int) (System.currentTimeMillis() / 180 % points.length)];
+        Vec3d targetPos = new Vec3d(base.x, base.y + entity.getHeight() * mul, base.z);
+
+        double halfWidth = entity.getWidth() / 2.0;
+        double sideOffset = swingSideRight ? halfWidth * 1.2f : -halfWidth * 1;
+
+        double yawToEntity = Math.atan2(entity.getZ() - mc.player.getZ(), entity.getX() - mc.player.getX());
+        double offsetX = Math.cos(yawToEntity + Math.PI / 2) * sideOffset;
+        double offsetZ = Math.sin(yawToEntity + Math.PI / 2) * sideOffset;
+        targetPos = targetPos.add(offsetX, 0, offsetZ);
+
+        double dx = targetPos.x - eye.x;
+        double dy = targetPos.y - eye.y;
+        double dz = targetPos.z - eye.z;
+        double dist = Math.sqrt(dx * dx + dz * dz);
+
+        float baseYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+        float basePitch = (float) -Math.toDegrees(Math.atan2(dy, dist));
+
+        long now = System.currentTimeMillis();
+
+        if (now - lastSwitch > 200 + random.nextInt(250)) {
+            lastSwitch = now;
+            swingSideRight = !swingSideRight;
+
+            float distanceFactor = (float) MathHelper.clamp(dist / 6.0f, 0.4f, 1.0f);
+            float maxDeviation = 4.0f * distanceFactor;
+
+            jitterYawTarget = (swingSideRight ? maxDeviation : -maxDeviation) + (float) (random.nextGaussian() * 0.6f);
+        }
+
+        float diff = jitterYawTarget - jitterYaw;
+        jitterYawSpeed += diff * 0.05f;
+        jitterYawSpeed *= 0.88f;
+        jitterYaw += jitterYawSpeed;
+        jitterYaw *= 0.985f;
+
+        if (now - lastBreathChange > 2000 + random.nextInt(1500)) {
+            lastBreathChange = now;
+            swaySpeed = 0.035f + random.nextFloat() * 0.02f;
+            swayAmplitude = 2.0f + random.nextFloat() * 1.2f;
+        }
+
+        swayPhase += swaySpeed;
+        float sway = (float) Math.sin(swayPhase) * swayAmplitude;
+        float totalYawOffset = (float) MathHelper.clamp(jitterYaw + sway, -halfWidth * 8.5f, halfWidth * 8.5f);
+        microJitter += (random.nextFloat() - 0.5f) * 0.25f;
+        microJitter *= 0.85f;
+
+        float finalYaw = baseYaw + totalYawOffset + microJitter;
+        float finalPitch = basePitch + (float) Math.sin(swayPhase * 0.8f) * 0.5f;
+
+
+        Manager.ROTATION.setSmooth(finalYaw, finalPitch, 1.1f, 180f, 15f, true);
+    }
+
+
+
+    private void hollyworld(LivingEntity entity, boolean force) {
+        Vec3d eye = mc.player.getEyePos();
+        Vec3d base = entity.getPos();
+        float[] points = new float[]{0.85f, 0.65f, 0.35f, 0.25f};
+        float mul = points[(int) (System.nanoTime() % points.length)];
+        Vec3d aim = new Vec3d(base.x, base.y + entity.getHeight() * mul, base.z);
+
+        double dx = aim.x - eye.x;
+        double dy = aim.y - eye.y;
+        double dz = aim.z - eye.z;
+
+        double hd = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+        float pitch = (float) -Math.toDegrees(Math.atan2(dy, hd));
+
+        if (force) {
+            Manager.ROTATION.set(yaw, MathHelper.clamp(pitch, -89.9f, 89.9f));
+        } else {
+            Manager.ROTATION.setSmooth(yaw, pitch, 0.25f, 45f, 12f, true);
+        }
+    }
+
+    private boolean handleElytraRotation(LivingEntity t) {
+        ElytraTarget ely = Manager.FUNCTION_MANAGER.elytraTarget;
+        if (ely.state && mc.player.isGliding()) {
+            if (ely.mode.is("Advanced")) ely.overtakingElytra(t, false);
+            else ely.targetDefault(t, false);
+            return true;
+        }
+        return false;
+    }
+
+    public void attackTarget(PlayerEntity player) {
+        boolean sprintStop = false;
+        boolean canStartSprint = mc.player.input.movementForward > 0
+                && !mc.player.hasStatusEffect(StatusEffects.BLINDNESS)
+                && !mc.player.isGliding()
+                && !mc.player.isUsingItem()
+                && !mc.player.horizontalCollision
+                && mc.player.getHungerManager().getFoodLevel() > 6
+                && !mc.player.isSneaking();
+
+        if (setting.get("Shield release") && mc.player.isBlocking()) {
+            mc.interactionManager.stopUsingItem(mc.player);
+        }
+
+        if (sprintreset.is("Legit") && !mc.player.isGliding()) {
+            if (mc.player.isSprinting() || canAttack()) {
+                if (mc.player.isSprinting()) return;
+            }
+        }
+
+        if (sprintreset.is("Rage")) {
+            if (((ClientPlayerEntityAccessor) mc.player).getLastSprinting()) {
+                mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.STOP_SPRINTING));
+                mc.player.setSprinting(false);
+                sprintStop = true;
+            }
+        }
+
+        cpsLimit = System.currentTimeMillis() + 500L;
+
+        mc.interactionManager.attackEntity(player, target);
+        mc.player.swingHand(MAIN_HAND);
+
+        ElytraTarget elytraTarget = Manager.FUNCTION_MANAGER.elytraTarget;
+        if (elytraTarget.mode.is("Advanced")) {
+            elytraTarget.trueFireWork = true;
+            if (elytraTarget.prefer.get()) elytraTarget.nextPhase(target);
+        }
+
+        if (setting.get("Break shield")) shieldBreaker(false);
+
+        if (sprintreset.is("Rage") && sprintStop && canStartSprint) {
+            if (((ClientPlayerEntityAccessor) mc.player).getLastSprinting()) {
+                mc.player.networkHandler.sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.START_SPRINTING));
+                mc.player.setSprinting(true);
+            }
+        }
+    }
+
+    /** Elytra hedeflemesi açıkken menzil, gecikme telafili (gerçek) hedef konumuna göre ölçülür. */
+    private double attackDistance(LivingEntity e) {
+        ElytraTarget ely = Manager.FUNCTION_MANAGER.elytraTarget;
+        if (ely != null && ely.state && mc.player.isGliding()) {
+            double d = ely.getCompDistance(e);
+            if (d >= 0.0) return d;
+        }
+        return AuraUtil.getDistance(e);
+    }
+
+    private boolean shouldAttack(LivingEntity e) {
+        if (e == null || cpsLimit > System.currentTimeMillis()) return false;
+        if (attackDistance(e) > distance.get().doubleValue()) return false;
+        return canAttack();
+    }
+
+    private boolean canAttack() {
+        if (noAttackIfEat.get() && mc.player.isUsingItem() && !mc.player.getActiveItem().isOf(Items.SHIELD)) return false;
+
+        if (System.currentTimeMillis() < cpsLimit
+                || (!(mc.player.getMainHandStack().isOf(Items.MACE))
+                && mc.player.getAttackCooldownProgress(mc.getRenderTickCounter().getTickDelta(true)) < 0.9F)) return false;
+
+        boolean restrict = mc.player.hasStatusEffect(StatusEffects.BLINDNESS)
                 || mc.player.hasStatusEffect(StatusEffects.LEVITATION)
                 || mc.player.hasStatusEffect(StatusEffects.SLOW_FALLING)
                 || mc.player.isInLava()
@@ -334,324 +697,51 @@ public class AttackAura extends Function {
                 || mc.player.isGliding()
                 || (mc.player.isInFluid() && !mc.options.jumpKey.isPressed())
                 || MoveUtil.isInWeb();
-    }
 
-    private boolean isCritState() {
-        return critImpossible() || (!mc.player.isOnGround() && mc.player.fallDistance > 0.0f);
-    }
+        boolean needSpace = onlySpaceCritical.get()
+                && mc.player.isOnGround()
+                && !mc.options.jumpKey.isPressed();
 
-    // ------------------------------------------------------------------ targets
-
-    private boolean elytraActive() {
-        ElytraTarget ely = Manager.FUNCTION_MANAGER.elytraTarget;
-        return ely != null && ely.state && mc.player.isGliding();
-    }
-
-    // The new ElytraTarget only tracks/predicts the target, it no longer drives the rotation
-    private boolean handleElytraRotation(LivingEntity t) {
-        return false;
-    }
-
-    private double attackDistanceTo(LivingEntity e) {
-        return eyeDistance(e);
-    }
-
-    private double eyeDistance(Entity e) {
-        Vec3d eye = mc.player.getEyePos();
-        Vec3d p = closestPoint(eye, e.getBoundingBox());
-        return eye.distanceTo(p);
-    }
-
-    private Vec3d closestPoint(Vec3d from, Box b) {
-        return new Vec3d(
-                MathHelper.clamp(from.x, b.minX, b.maxX),
-                MathHelper.clamp(from.y, b.minY, b.maxY),
-                MathHelper.clamp(from.z, b.minZ, b.maxZ));
-    }
-
-    private boolean isEntityReachable(LivingEntity e) {
-        if (elytraActive()) {
-            return eyeDistance(e) <= elytraDistance.get().doubleValue();
+        if (setting.get("Crits only") && !restrict) {
+            return needSpace || (!mc.player.isOnGround() && mc.player.fallDistance > 0.0f);
         }
-        double reach = attackDistance.get().doubleValue()
-                + extraReach.get().doubleValue()
-                + mc.player.getVelocity().length() * 3.0;
-        return eyeDistance(e) <= reach;
+        return true;
     }
 
-    private Optional<LivingEntity> findTargetWithParam(boolean allowBehindWalls) {
-        if (mc.world == null || mc.player == null) return Optional.empty();
+    private boolean shieldBreaker(boolean instant) {
+        int axeSlot = InventoryUtil.getAxe().slot();
+        if (axeSlot == -1) return false;
+        if (!(target instanceof PlayerEntity)) return false;
+        if (!((PlayerEntity) target).isUsingItem() && !instant) return false;
+        if (((PlayerEntity) target).getOffHandStack().getItem() != Items.SHIELD
+                && ((PlayerEntity) target).getMainHandStack().getItem() != Items.SHIELD) return false;
 
-        Vec3d eye = mc.player.getEyePos();
-        double reach = attackDistance.get().doubleValue() + extraReach.get().doubleValue();
-
-        Comparator<LivingEntity> order;
-        switch (targetPriority.get()) {
-            case "Distance":
-                order = Comparator.comparingDouble(e -> eyeDistance(e));
-                break;
-            case "HP":
-                order = Comparator.comparingDouble(e -> (double) e.getHealth());
-                break;
-            case "Armor":
-                order = Comparator.comparingDouble(e -> (double) AuraUtil.getArmor(e));
-                break;
-            default:
-                final Vec3d look = Vec3d.fromPolar(Manager.ROTATION.getPitch(), Manager.ROTATION.getYaw());
-                order = Comparator.comparingDouble(e -> Math.acos(MathHelper.clamp(
-                        look.dotProduct(e.getBoundingBox().getCenter().subtract(eye).normalize()), -1.0, 1.0)));
-                break;
-        }
-
-        List<LivingEntity> list = new ArrayList<>();
-        for (Entity e : Manager.SYNC_MANAGER.getEntities()) {
-            if (!(e instanceof LivingEntity le)) continue;
-            if (le == mc.player || !le.isAlive()) continue;
-            if (!isValidTarget(le)) continue;
-            if (!allowBehindWalls && !blockClear(eye, closestPoint(eye, le.getBoundingBox()))) continue;
-            list.add(le);
-        }
-        return list.stream().min(order);
-    }
-
-    private boolean isValidTarget(LivingEntity entity) {
-        if (entity == null || entity == mc.player || entity.isDead() || !entity.isAlive()) return false;
-        if (entity instanceof ArmorStandEntity) return false;
-        if (Manager.FUNCTION_MANAGER.littleSnickers.state && entity instanceof GhostWolfEntity) return false;
-        if (!isEntityReachable(entity)) return false;
-        if (Manager.FUNCTION_MANAGER.antiBot.check(entity)) return false;
-
-        if (entity instanceof PlayerEntity) {
-            if (!targetSettings.get("Players")) return false;
-            boolean friend = Manager.FRIEND_MANAGER.isFriend(entity.getName().getString());
-            if (friend) return targetSettings.get("Friends");
-            boolean naked = entity.getArmor() <= 0;
-            return !naked || targetSettings.get("Without armor");
-        }
-        if (entity instanceof Monster) {
-            return targetSettings.get("Hostile mobs");
-        }
-        if (entity instanceof MobEntity) {
-            return targetSettings.get("Animals");
-        }
-        return false;
-    }
-
-    // ------------------------------------------------------------------ aim helpers
-
-    private float curYaw() {
-        return Manager.ROTATION.getYaw();
-    }
-
-    private float curPitch() {
-        return Manager.ROTATION.getPitch();
-    }
-
-    private boolean blockClear(Vec3d from, Vec3d to) {
-        if (mc.world == null || mc.player == null) return true;
-        BlockHitResult hit = mc.world.raycast(new RaycastContext(from, to,
-                RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, mc.player));
-        return hit == null || hit.getType() == HitResult.Type.MISS;
-    }
-
-    private boolean aimHits(float yaw, float pitch, double dist, LivingEntity t, boolean ignoreWalls) {
-        if (t == null || mc.player == null) return false;
-        if (RayTraceUtil.getMouseOver(t, yaw, pitch, dist) != t) return false;
-        if (ignoreWalls) return true;
-
-        BlockHitResult hit = RayTraceUtil.rayCast(dist, yaw, pitch, false);
-        if (hit == null || hit.getType() == HitResult.Type.MISS) return true;
-        return mc.player.getEyePos().distanceTo(hit.getPos()) >= eyeDistance(t);
-    }
-
-    private Vec3d aimPoint(Vec3d eye, LivingEntity t, double reach, boolean throughWalls) {
-        Box b = t.getBoundingBox();
-        double cx = (b.minX + b.maxX) / 2.0;
-        double cz = (b.minZ + b.maxZ) / 2.0;
-        double hx = (b.maxX - b.minX) / 2.0 * 0.6;
-        double hz = (b.maxZ - b.minZ) / 2.0 * 0.6;
-        double h = b.maxY - b.minY;
-
-        double[] heights = {0.85, 0.7, 0.55, 0.4, 0.25};
-        double[] ox = {0.0, -hx, hx};
-        double[] oz = {0.0, -hz, hz};
-
-        final float cy = curYaw();
-        final float cp = curPitch();
-
-        List<Vec3d> points = new ArrayList<>();
-        for (double hh : heights) {
-            for (double x : ox) {
-                for (double z : oz) {
-                    points.add(new Vec3d(cx + x, b.minY + h * hh, cz + z));
-                }
-            }
-        }
-        points.sort(Comparator.comparingDouble(p -> angleCost(eye, p, cy, cp)));
-
-        for (Vec3d p : points) {
-            if (eye.distanceTo(p) > reach) continue;
-            if (!throughWalls && !blockClear(eye, p)) continue;
-            return p.subtract(eye);
-        }
-
-        Vec3d closest = closestPoint(eye, b);
-        if (throughWalls || blockClear(eye, closest)) {
-            return closest.subtract(eye);
-        }
-        return Vec3d.ZERO;
-    }
-
-    private double angleCost(Vec3d eye, Vec3d p, float cy, float cp) {
-        double dx = p.x - eye.x;
-        double dy = p.y - eye.y;
-        double dz = p.z - eye.z;
-        float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
-        float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.hypot(dx, dz)));
-        return Math.abs(MathHelper.wrapDegrees(yaw - cy)) + Math.abs(pitch - cp);
-    }
-
-    private float stepAngle(float current, float wanted, float factor) {
-        return current + MathHelper.wrapDegrees(wanted - current) * factor;
-    }
-
-    private void aim(float yaw, float pitch, float maxStep) {
-        float cy = curYaw();
-        float cp = curPitch();
-        float dy = MathHelper.clamp(MathHelper.wrapDegrees(yaw - cy), -maxStep, maxStep);
-        float dp = MathHelper.clamp(pitch - cp, -maxStep, maxStep);
-
-        float gcd = GCDUtil.getGCDValue();
-        if (gcd > 0.0f) {
-            dy -= dy % gcd;
-            dp -= dp % gcd;
-        }
-        Manager.ROTATION.set(cy + dy, MathHelper.clamp(cp + dp, -90.0f, 90.0f));
-    }
-
-    // ------------------------------------------------------------------ rotation
-
-    private void rotateToTarget() {
-        LivingEntity t = target;
-        if (t == null) return;
-
-        Vec3d eye = mc.player.getEyePos();
-        double reach = attackDistance.get().doubleValue();
-        boolean funTime = rotationType.get().contains("FunTime");
-        boolean throughWalls = funTime || !dontHitWhen.get("Enemy behind a wall");
-
-        float cy = curYaw();
-        float cp = curPitch();
-
-        Vec3d tp = aimPoint(eye, t, reach, throughWalls);
-        boolean hasPoint = tp.lengthSquared() > 1.0E-7;
-        float yawToTarget = !hasPoint ? cy
-                : (float) MathHelper.wrapDegrees(Math.toDegrees(Math.atan2(tp.z, tp.x)) - 90.0);
-        float pitchToTarget = !hasPoint ? cp
-                : (float) -Math.toDegrees(Math.atan2(tp.y, Math.hypot(tp.x, tp.z)));
-
-        System.arraycopy(pitchHistory, 0, pitchHistory, 1, pitchHistory.length - 1);
-        pitchHistory[0] = pitchToTarget;
-
-        if (attackCooldown >= 2 && hitCounter > 43
-                && (attackCooldown == 4 || Math.random() > 0.5)
-                && (!randomDirection || !aimHits(cy, cp, 3.0, t, false))) {
+        if (axeSlot >= 9) {
+            mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, axeSlot, mc.player.getInventory().selectedSlot, SlotActionType.SWAP, mc.player);
+            mc.getNetworkHandler().sendPacket(new CloseHandledScreenC2SPacket(mc.player.currentScreenHandler.syncId));
+            mc.interactionManager.attackEntity(mc.player, target);
             mc.player.swingHand(Hand.MAIN_HAND);
-            if (Math.random() > 0.5) randomDirection = !randomDirection;
-            hitCounter = (int) MathUtil.random(-10.0f, 10.0f);
-        }
-
-        boolean skip = usingItemBlocks() || containerBlocks();
-        boolean attackSoon = !skip && attackCooldown >= 8
-                && eyeDistance(t) <= attackDistance.get().doubleValue() + 0.5;
-        if ((attackWindow <= 0 && canAttack()) || attackSoon) {
-            attackWindow = 1;
-            if (!mc.player.isTouchingWater() && smartSprint.get() && !mc.player.isOnGround()) {
-                sprintFreeze = 1;
-            }
-        }
-
-        if (funTime) {
-            applyFunTimeSmoothing(yawToTarget, pitchToTarget);
+            mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, axeSlot, mc.player.getInventory().selectedSlot, SlotActionType.SWAP, mc.player);
+            mc.getNetworkHandler().sendPacket(new CloseHandledScreenC2SPacket(mc.player.currentScreenHandler.syncId));
         } else {
-            applyLegitSmoothing(yawToTarget, pitchToTarget);
+            mc.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(axeSlot));
+            mc.interactionManager.attackEntity(mc.player, target);
+            mc.player.swingHand(Hand.MAIN_HAND);
+            mc.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(mc.player.getInventory().selectedSlot));
         }
-
-        attackWindow--;
-        postAttack--;
-        acquireTicks--;
+        return true;
     }
 
-    private void applyFunTimeSmoothing(float yawToTarget, float pitchToTarget) {
-        float cy = curYaw();
-        float cp = curPitch();
-        double dist = attackDistance.get().doubleValue();
-
-        float time = mc.player.age + mc.getRenderTickCounter().getTickDelta(false);
-        float smoothW = (float) ((Math.sin(time * 0.4) * 3.0) + (Math.sin(time * 0.95 + 1.4) * 2.0));
-        float smoothH = (float) ((Math.cos(time * 0.5 + 0.7) * 0.5) + (Math.cos(time * 0.78 + 3.1) * 1.5));
-
-        int hist = MathHelper.clamp(10 - attackCooldown, 0, pitchHistory.length - 1);
-        float finalPitch = stepAngle(cp, pitchHistory[hist] + smoothH * 1.5f, MathUtil.random(0.1f, 0.5f));
-        float finalYaw = stepAngle(cy, yawToTarget + smoothW, MathUtil.random(0.1f, 0.4f));
-
-        if (attackWindow >= 0) {
-            if (!aimHits(cy, cp, dist, target, true) && acquireTicks <= 0) {
-                finalYaw = yawToTarget;
-            }
-            if (!aimHits(yawToTarget, finalPitch, dist, target, true) && acquireTicks <= 0) {
-                finalPitch = pitchToTarget;
-            }
-            if (!aimHits(cy + smoothW, cp + smoothH, dist, target, true)
-                    && aimHits(cy, cp, dist, target, true)) {
-                smoothW = MathHelper.clamp(smoothW, -0.05f, 0.05f);
-                smoothH = MathHelper.clamp(smoothH, -0.05f, 0.05f);
+    private Vec3d predictPos(LivingEntity e) {
+        Vec3d p = e.getPos();
+        var ts = Manager.FUNCTION_MANAGER.targetStrafe;
+        if (ts.state && ts.predictCheck.get()) {
+            float pr = ts.predict.get().floatValue();
+            if (pr > 0) {
+                Vec3d v = e.getVelocity();
+                p = p.add(v.x * pr, v.y * pr, v.z * pr);
             }
         }
-
-        if (attackCooldown <= 4 && hitCounter % 2 == 0) {
-            finalYaw = cy;
-        }
-
-        boolean fullAim = rotationType.get().equals("FunTime");
-        aim(finalYaw + smoothW, (fullAim ? finalPitch : cp) + smoothH, 220.0f);
-    }
-
-    private void applyLegitSmoothing(float yawToTarget, float pitchToTarget) {
-        float cy = curYaw();
-        float cp = curPitch();
-        double dist = attackDistance.get().doubleValue();
-
-        float t = mc.player.age + mc.getRenderTickCounter().getTickDelta(false);
-        float sway = (float) (((Math.sin(t * 0.31f) * 0.5) + (Math.sin(t * 1.7f + 2.6f) * 0.2)) * 8.0) / 4.0f;
-        float smoothW = sway;
-        float smoothH = sway;
-
-        float finalYaw = stepAngle(cy, yawToTarget, MathUtil.random(0.2f, 0.35f));
-        float finalPitch = stepAngle(cp, pitchToTarget, MathUtil.random(0.15f, 0.25f));
-
-        if (attackWindow >= 0) {
-            finalPitch = stepAngle(cp, pitchToTarget, 0.35f);
-            smoothH /= 3.0f;
-            smoothW /= 3.0f;
-            if (!aimHits(cy, cp, dist, target, true)) {
-                finalYaw = stepAngle(cy, yawToTarget, MathUtil.random(0.7f, 1.0f));
-            }
-        }
-
-        if (!aimHits(finalYaw + smoothW, finalPitch + smoothH, dist, target, true)
-                && aimHits(yawToTarget, pitchToTarget, dist, target, true)) {
-            smoothW = MathHelper.clamp(smoothW, -0.15f, 0.15f);
-            smoothH = MathHelper.clamp(smoothH, -0.15f, 0.15f);
-        }
-
-        if (postAttack >= 0) {
-            smoothW *= 8.0f;
-            if (attackCooldown >= 1 && hitCounter % 5 == 0) {
-                finalPitch = stepAngle(cp, -pitchToTarget, 0.05f);
-            }
-        }
-
-        aim(finalYaw + smoothW, finalPitch + smoothH, 180.0f);
+        return p;
     }
 }
