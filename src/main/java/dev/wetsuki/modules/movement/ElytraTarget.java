@@ -52,7 +52,7 @@ public class ElytraTarget extends Function {
     public final ModeSetting mode = new ModeSetting("Type", "Normal", "Normal", "Advanced");
 
     private final BooleanSetting frontMode = new BooleanSetting("Front of target", true, "Flies in front of the target and hits it");
-    private final SliderSetting frontDistance = new SliderSetting("Front distance", 3.0, 1.0, 15.0, 0.5, () -> frontMode.get());
+    private final SliderSetting frontDistance = new SliderSetting("Front distance", 2.0, 1.0, 15.0, 0.5, () -> frontMode.get());
     private final BooleanSetting hitboxAim = new BooleanSetting("Hitbox aim", true, "Faces the target right before each hit so hits land, otherwise keeps getting in front", () -> frontMode.get());
     private final BooleanSetting frontHitbox = new BooleanSetting("Show hitbox", true, () -> frontMode.get());
 

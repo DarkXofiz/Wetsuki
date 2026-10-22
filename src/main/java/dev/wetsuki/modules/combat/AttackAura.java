@@ -84,7 +84,7 @@ public class AttackAura extends Function {
     private final SliderSetting distance = new SliderSetting("Attack radius", 3.0f, 1.8f, 6f, 0.1f);
     private final SliderSetting rotateDistance = new SliderSetting("Detection radius", 5f, 0.0f, 10f, 0.1f);
 
-    private final SliderSetting elytraDistance = new SliderSetting("Elytra radius", 40f, 0f, 80f, 1f);
+    private final SliderSetting elytraDistance = new SliderSetting("Elytra radius", 12f, 0f, 80f, 1f);
     private final SliderSetting snapSpeed = new SliderSetting("Snap speed", 150, 50, 300, 50f, () -> mode.is("Snap"));
 
     private final BindBooleanSetting onlySpaceCritical = new BindBooleanSetting("Only with space", false, () -> setting.get("Crits only"));
