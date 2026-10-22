@@ -151,6 +151,7 @@ public class ElytraTarget extends Function {
     private double smTurn = 0.0;
     private double smOmega = 0.0; // hedefin yatay dönüş hızı (rad/tick)
     private Vec3d compPos = null;  // gecikme telafi edilmiş hedef konumu
+    private Vec3d leadAim = null;  // hedefin yay üzerindeki tahmini gövde merkezi (etrafımızda dönen hedef için)
 
     public ElytraTarget() {
         addSettings(
@@ -567,12 +568,16 @@ public class ElytraTarget extends Function {
         LivingEntity t = Manager.FUNCTION_MANAGER.attackAura.target;
         if (t == null || !t.isAlive()) return;
 
-        // Kutu hedefin kendi hitbox'ına çizilir (render tick'ine göre akıcı), ileri kayıp yamulmaz
+        // Kutu hedefin hitbox'ı üzerinden çizilir (render tick'ine göre akıcı, yumuşatma yok)
         float pt = mc.getRenderTickCounter().getTickDelta(true);
         double ix = MathHelper.lerp(pt, t.prevX, t.getX());
         double iy = MathHelper.lerp(pt, t.prevY, t.getY());
         double iz = MathHelper.lerp(pt, t.prevZ, t.getZ());
-        Box box = t.getBoundingBox().offset(ix - t.getX(), iy - t.getY(), iz - t.getZ());
+        // Hedef hareket ediyorsa kutu hedefin gittiği yönde az ilerisine (düz çizgide) çizilir
+        Vec3d ahead = Vec3d.ZERO;
+        Vec3d mv = new Vec3d(t.getX() - t.prevX, 0, t.getZ() - t.prevZ);
+        if (mv.lengthSquared() > 0.0025) ahead = mv.normalize().multiply(1.5);
+        Box box = t.getBoundingBox().offset(ix - t.getX() + ahead.x, iy - t.getY(), iz - t.getZ() + ahead.z);
         RenderUtil.render3D.drawHoleOutline(box, ColorUtil.rgba(255, 70, 70, 255), 2);
     }
 
@@ -655,6 +660,7 @@ public class ElytraTarget extends Function {
             smTurn = 0.0;
             smOmega = 0.0;
             compPos = null;
+            leadAim = null;
         }
 
         // Hareketi yumuşat (paket titremesi noktayı zıplatmasın) + histerezis
@@ -727,6 +733,7 @@ public class ElytraTarget extends Function {
 
         Vec3d half = new Vec3d(0, base.getHeight() / 2.0, 0);
         Vec3d origin = leadPos.add(half);
+        leadAim = origin;
 
         // Nokta her zaman saldırı menzilinin içinde kalsın ki AttackAura vuruş yapabilsin
         double maxHitDist = Math.max(1.0, Manager.FUNCTION_MANAGER.attackAura.getAttackRadius() - 0.5);
@@ -823,6 +830,11 @@ public class ElytraTarget extends Function {
 
         // Önüne geçmeye devam et. Sadece vuruş hazırsa ve hedef menzildeyken bu nişan hedefi kaçırıyorsa
         // (hedef yanımızdan/etrafımızdan dönüyorsa) hedefe dön ki vuruş hedefe dönükken yapılsın.
+        // Hedef etrafımızda dönüyorsa önüne geçmeye çalışmak yerine yay üzerindeki tahmini konumuna uç ki vuruş menzilinde kal
+        if (leadAim != null && Math.abs(smOmega) >= 0.12) {
+            frontTime = 0L;
+            return leadAim;
+        }
         Vec3d aim = stableAimPoint(front);
         if (inHitWindow(base) && (hitboxAim.get() || !rayHitsTarget(base, aim))) {
             frontTime = 0L;                       // vuruş için hedefe dönüyoruz: kutuyu gizle
