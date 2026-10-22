@@ -562,15 +562,17 @@ public class ElytraTarget extends Function {
     }
 
     private void renderFrontHitbox() {
-        if (!frontMode.get() || !frontHitbox.get() || frontFeet == null) return;
-        if (!mc.player.isGliding() || Manager.FUNCTION_MANAGER.attackAura.target == null) return;
-        if (System.currentTimeMillis() - frontTime > 300L) return;
+        if (!frontMode.get() || !frontHitbox.get()) return;
+        if (!mc.player.isGliding()) return;
+        LivingEntity t = Manager.FUNCTION_MANAGER.attackAura.target;
+        if (t == null || !t.isAlive()) return;
 
-        double hw = frontWidth / 2.0;
-        Box box = new Box(
-                frontFeet.x - hw, frontFeet.y, frontFeet.z - hw,
-                frontFeet.x + hw, frontFeet.y + frontHeight, frontFeet.z + hw
-        );
+        // Kutu hedefin kendi hitbox'ına çizilir (render tick'ine göre akıcı), ileri kayıp yamulmaz
+        float pt = mc.getRenderTickCounter().getTickDelta(true);
+        double ix = MathHelper.lerp(pt, t.prevX, t.getX());
+        double iy = MathHelper.lerp(pt, t.prevY, t.getY());
+        double iz = MathHelper.lerp(pt, t.prevZ, t.getZ());
+        Box box = t.getBoundingBox().offset(ix - t.getX(), iy - t.getY(), iz - t.getZ());
         RenderUtil.render3D.drawHoleOutline(box, ColorUtil.rgba(255, 70, 70, 255), 2);
     }
 
