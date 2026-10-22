@@ -10,7 +10,7 @@ import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
-import net.minecraft.item.SwordItem;
+import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.network.packet.Packet;
@@ -264,7 +264,7 @@ public class ElytraTarget extends Function {
         if (!autoSword.get() || !mode.is("Normal")) return;
 
         ItemStack held = mc.player.getMainHandStack();
-        if (held.getItem() instanceof SwordItem || held.isOf(Items.MACE)) return;
+        if (held.isIn(ItemTags.SWORDS) || held.isOf(Items.MACE)) return;
         if (!swordTimer.hasTimeElapsed(200, true)) return;
 
         PlayerInventory inv = mc.player.getInventory();
@@ -283,8 +283,9 @@ public class ElytraTarget extends Function {
         int best = -1;
         int bestRank = Integer.MAX_VALUE;
         for (int i = from; i < to; i++) {
-            Item item = inv.getStack(i).getItem();
-            if (!(item instanceof SwordItem)) continue;
+            ItemStack stack = inv.getStack(i);
+            if (!stack.isIn(ItemTags.SWORDS)) continue;
+            Item item = stack.getItem();
             int rank = SWORD_ORDER.indexOf(item);
             if (rank < 0) rank = SWORD_ORDER.size();
             if (rank < bestRank) {
