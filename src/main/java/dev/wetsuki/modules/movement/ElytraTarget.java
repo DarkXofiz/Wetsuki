@@ -4,7 +4,15 @@ import lombok.Getter;
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.LivingEntity;
 import dev.wetsuki.util.player.AuraUtil;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.effect.StatusEffects;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.item.SwordItem;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.util.Hand;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.c2s.common.KeepAliveC2SPacket;
 import net.minecraft.util.hit.HitResult;
@@ -78,6 +86,20 @@ public class ElytraTarget extends Function {
     private final SliderSetting fakelagsDistance = new SliderSetting("Flagger distance", 10.0, 5.0, 20.0, 0.5, () -> fakelags.get() && mode.is("Advanced"));
     private final SliderSetting fakelagsMaxDistance = new SliderSetting("Max flagger distance", 30.0, 15.0, 50.0, 1.0, () -> fakelags.get() && mode.is("Advanced"));
 
+    // Normal mod: acilir acilmaz kalkis + havai fisekle ucus, hedefte otomatik kilic
+    private final BooleanSetting autoStart = new BooleanSetting("Auto start", true, "Takes off and flies with fireworks right after the module is enabled", () -> mode.is("Normal"));
+    private final SliderSetting boostDelay = new SliderSetting("Firework delay", 900f, 300f, 3000f, 50f, () -> mode.is("Normal") && autoStart.get());
+    private final BooleanSetting autoSword = new BooleanSetting("Auto sword", true, "Takes the sword in hand as soon as a target is set", () -> mode.is("Normal"));
+
+    private static final List<Item> SWORD_ORDER = List.of(
+            Items.NETHERITE_SWORD, Items.DIAMOND_SWORD, Items.IRON_SWORD,
+            Items.GOLDEN_SWORD, Items.STONE_SWORD, Items.WOODEN_SWORD);
+
+    private boolean ready = false;
+    private final TimerUtil takeoffTimer = new TimerUtil();
+    private final TimerUtil boostTimer = new TimerUtil();
+    private final TimerUtil swordTimer = new TimerUtil();
+
     private final CopyOnWriteArrayList<Packet<?>> packetBuffer = new CopyOnWriteArrayList<>();
     private boolean isAccumulatingPackets = false;
     private boolean wasInFarRange = false;
@@ -133,6 +155,7 @@ public class ElytraTarget extends Function {
     public ElytraTarget() {
         addSettings(
                 mode,
+                autoStart, boostDelay, autoSword,
                 frontMode, frontDistance, hitboxAim, frontHitbox,
                 sila, silaTime,
                 perelet, predict,
@@ -148,6 +171,11 @@ public class ElytraTarget extends Function {
 
     @Override
     public void onEnable() {
+        // Ayarlar config'den onEnable'dan sonra yuklenebildigi icin asil hazirlik ensureReady() icinde, ilk tick'te yapilir
+        ready = false;
+        takeoffTimer.reset();
+        boostTimer.reset();
+        swordTimer.reset();
         rebuildAirDirections();
         packetBuffer.clear();
         isAccumulatingPackets = false;
@@ -163,6 +191,108 @@ public class ElytraTarget extends Function {
         smTurn = 0.0;
         smOmega = 0.0;
         compPos = null;
+    }
+
+    /** Modul acildiktan sonra ilk tick'te bir kez: yon listesini kur ve hedef icin gereken AttackAura'yi ac. */
+    private void ensureReady() {
+        if (ready) return;
+        ready = true;
+        rebuildAirDirections();
+        if (mode.is("Normal")) {
+            var aura = Manager.FUNCTION_MANAGER.attackAura;
+            if (aura != null && !aura.state) aura.setState(true);
+        }
+    }
+
+    /** Normal mod her tick: hedef yoksa sadece havai fisekle uc, hedef varsa kilici ele al. */
+    private void updateNormal() {
+        var aura = Manager.FUNCTION_MANAGER.attackAura;
+        LivingEntity target = aura != null && aura.state ? aura.target : null;
+        boolean hasTarget = target != null && target.isAlive();
+
+        if (hasTarget) {
+            equipSword();
+        } else {
+            frontEntity = null; // hedef kalmadi: takip yumusatmasini sifirla
+        }
+
+        if (autoStart.get()) autoFly();
+    }
+
+    /** Elytra takili ve ucus mumkunse kalkis yapar, havadayken havai fisekle hizlandirir. */
+    private void autoFly() {
+        if (mc.player == null || mc.interactionManager == null) return;
+
+        ItemStack chest = mc.player.getEquippedStack(EquipmentSlot.CHEST);
+        boolean elytra = chest.isOf(Items.ELYTRA) && chest.getDamage() < chest.getMaxDamage() - 1;
+        if (!elytra || mc.player.getAbilities().flying || mc.player.hasVehicle()
+                || mc.player.isTouchingWater() || mc.player.isInLava() || mc.player.isClimbing()
+                || mc.player.hasStatusEffect(StatusEffects.LEVITATION)) return;
+
+        if (!mc.player.isGliding()) {
+            if (mc.player.isOnGround()) {
+                if (takeoffTimer.hasTimeElapsed(250, true)) mc.player.jump();
+            } else if (mc.player.getVelocity().y < 0.0 && takeoffTimer.hasTimeElapsed(150, true)) {
+                InventoryUtil.startFly();
+            }
+            return;
+        }
+
+        if (!boostTimer.hasTimeElapsed(boostDelay.get().longValue())) return;
+        if (mc.player.getVelocity().length() >= 1.7) return; // zaten hizli, fisek bosa gitmesin
+        if (useFirework()) boostTimer.reset();
+    }
+
+    private boolean useFirework() {
+        if (mc.player.getOffHandStack().isOf(Items.FIREWORK_ROCKET)) {
+            mc.interactionManager.interactItem(mc.player, Hand.OFF_HAND);
+            return true;
+        }
+        PlayerInventory inv = mc.player.getInventory();
+        for (int i = 0; i < 36; i++) {
+            if (inv.getStack(i).isOf(Items.FIREWORK_ROCKET)) {
+                InventoryUtil.inventorySwapClick2(Items.FIREWORK_ROCKET, true, false);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Elde kilic (veya mace) yoksa en iyi kilici hotbar'dan secer, sadece envanterdeyse ele takas eder. */
+    public void equipSword() {
+        if (mc.player == null || mc.interactionManager == null) return;
+        if (!autoSword.get() || !mode.is("Normal")) return;
+
+        ItemStack held = mc.player.getMainHandStack();
+        if (held.getItem() instanceof SwordItem || held.isOf(Items.MACE)) return;
+        if (!swordTimer.hasTimeElapsed(200, true)) return;
+
+        PlayerInventory inv = mc.player.getInventory();
+        int hotbar = bestSwordSlot(inv, 0, 9);
+        if (hotbar != -1) {
+            inv.selectedSlot = hotbar;
+            return;
+        }
+        int stored = bestSwordSlot(inv, 9, 36);
+        if (stored != -1 && mc.player.currentScreenHandler == mc.player.playerScreenHandler) {
+            mc.interactionManager.clickSlot(mc.player.playerScreenHandler.syncId, stored, inv.selectedSlot, SlotActionType.SWAP, mc.player);
+        }
+    }
+
+    private static int bestSwordSlot(PlayerInventory inv, int from, int to) {
+        int best = -1;
+        int bestRank = Integer.MAX_VALUE;
+        for (int i = from; i < to; i++) {
+            Item item = inv.getStack(i).getItem();
+            if (!(item instanceof SwordItem)) continue;
+            int rank = SWORD_ORDER.indexOf(item);
+            if (rank < 0) rank = SWORD_ORDER.size();
+            if (rank < bestRank) {
+                bestRank = rank;
+                best = i;
+            }
+        }
+        return best;
     }
 
     private void rebuildAirDirections() {
@@ -191,6 +321,11 @@ public class ElytraTarget extends Function {
 
         if (event instanceof EventRender3D) {
             renderFrontHitbox();
+        }
+
+        if (event instanceof EventUpdate && mode.is("Normal")) {
+            ensureReady();
+            updateNormal();
         }
 
         if (mode.is("Advanced") && mc.player.isGliding()) {
@@ -729,7 +864,8 @@ public class ElytraTarget extends Function {
         Vec3d modifiedPos;
 
         if (inEvasion) {
-            Vec3d dir = airDirections.get(directionIndex);
+            if (airDirections.isEmpty()) rebuildAirDirections();
+            Vec3d dir = airDirections.get(Math.max(0, Math.min(directionIndex, airDirections.size() - 1)));
             double strength = sila.get().floatValue();
             Vec3d candidatePos = targetPos.add(dir.normalize().multiply(strength));
             Vec3d tryBetter = findClosestValidPosAround(candidatePos, 10);
