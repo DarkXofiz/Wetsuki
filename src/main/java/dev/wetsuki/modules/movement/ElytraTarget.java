@@ -217,11 +217,13 @@ public class ElytraTarget extends Function {
             frontEntity = null; // hedef kalmadi: takip yumusatmasini sifirla
         }
 
-        if (autoStart.get()) autoFly();
+        // Hedef uzaktaysa (kaçıyorsa) önüne geçebilmek için fişeği sık kullan
+        boolean chase = hasTarget && AuraUtil.getDistance(target) > 6.0;
+        if (autoStart.get()) autoFly(chase);
     }
 
     /** Elytra takili ve ucus mumkunse kalkis yapar, havadayken havai fisekle hizlandirir. */
-    private void autoFly() {
+    private void autoFly(boolean chase) {
         if (mc.player == null || mc.interactionManager == null) return;
 
         ItemStack chest = mc.player.getEquippedStack(EquipmentSlot.CHEST);
@@ -239,8 +241,10 @@ public class ElytraTarget extends Function {
             return;
         }
 
-        if (!boostTimer.hasTimeElapsed(boostDelay.get().longValue())) return;
-        if (mc.player.getVelocity().length() >= 1.7) return; // zaten hizli, fisek bosa gitmesin
+        long delay = chase ? Math.min(boostDelay.get().longValue(), 350L) : boostDelay.get().longValue();
+        if (!boostTimer.hasTimeElapsed(delay)) return;
+        // Kovalamıyorsak zaten hızlıyken fişek boşa gitmesin; kovalarken hedefi geçmek için hız sınırı yok
+        if (!chase && mc.player.getVelocity().length() >= 1.7) return;
         if (useFirework()) boostTimer.reset();
     }
 
